@@ -1,0 +1,1165 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ETF 포트폴리오 매니저</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0b0f1a;
+    --surface: #111827;
+    --surface2: #1a2236;
+    --border: #1e2d45;
+    --primary: #3b82f6;
+    --primary-dim: #1d4ed8;
+    --green: #10b981;
+    --red: #ef4444;
+    --yellow: #f59e0b;
+    --text: #f1f5f9;
+    --muted: #94a3b8;
+    --muted2: #475569;
+    --index-color: #3b82f6;
+    --sector-color: #8b5cf6;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; min-height: 100vh; }
+
+  /* LAYOUT */
+  .layout { display: flex; min-height: 100vh; }
+  .sidebar { width: 220px; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
+  .main { flex: 1; overflow-y: auto; }
+
+  /* SIDEBAR */
+  .sidebar-logo { padding: 24px 20px 16px; border-bottom: 1px solid var(--border); }
+  .sidebar-logo h1 { font-size: 16px; font-weight: 700; color: var(--text); letter-spacing: -0.3px; }
+  .sidebar-logo p { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .sidebar-nav { padding: 12px 0; flex: 1; }
+  .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 20px; cursor: pointer; color: var(--muted); transition: all 0.15s; font-size: 13px; font-weight: 500; }
+  .nav-item:hover { background: var(--surface2); color: var(--text); }
+  .nav-item.active { background: rgba(59,130,246,0.12); color: var(--primary); border-right: 2px solid var(--primary); }
+  .nav-item svg { width: 16px; height: 16px; flex-shrink: 0; }
+  .sidebar-footer { padding: 16px 20px; border-top: 1px solid var(--border); }
+  .exchange-rate-widget { font-size: 11px; color: var(--muted); }
+  .exchange-rate-widget .rate { font-size: 13px; font-weight: 600; color: var(--text); margin-top: 2px; }
+
+  /* HEADER */
+  .page-header { padding: 28px 32px 0; display: flex; align-items: center; justify-content: space-between; }
+  .page-title { font-size: 22px; font-weight: 700; color: var(--text); }
+  .page-subtitle { font-size: 13px; color: var(--muted); margin-top: 4px; }
+  .header-actions { display: flex; gap: 10px; }
+
+  /* BUTTONS */
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; transition: all 0.15s; }
+  .btn-primary { background: var(--primary); color: white; }
+  .btn-primary:hover { background: var(--primary-dim); }
+  .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .btn-ghost:hover { background: var(--surface2); color: var(--text); }
+  .btn-sm { padding: 5px 10px; font-size: 12px; }
+  .btn-danger { background: rgba(239,68,68,0.1); color: var(--red); border: 1px solid rgba(239,68,68,0.3); }
+  .btn-danger:hover { background: rgba(239,68,68,0.2); }
+  .btn-success { background: rgba(16,185,129,0.1); color: var(--green); border: 1px solid rgba(16,185,129,0.3); }
+  .btn svg { width: 14px; height: 14px; }
+
+  /* CARDS */
+  .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; padding: 24px 32px; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+  .stat-label { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-value { font-size: 24px; font-weight: 700; color: var(--text); margin-top: 8px; }
+  .stat-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .stat-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 20px; margin-top: 8px; }
+  .badge-up { background: rgba(16,185,129,0.12); color: var(--green); }
+  .badge-down { background: rgba(239,68,68,0.12); color: var(--red); }
+  .badge-neutral { background: rgba(148,163,184,0.12); color: var(--muted); }
+
+  /* SECTION */
+  .content-section { padding: 0 32px 32px; }
+  .section-grid { display: grid; gap: 16px; }
+  .grid-2 { grid-template-columns: 1fr 1fr; }
+  .grid-3 { grid-template-columns: 2fr 1fr; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+  .card-header { padding: 18px 20px 0; display: flex; align-items: center; justify-content: space-between; }
+  .card-title { font-size: 14px; font-weight: 700; color: var(--text); }
+  .card-subtitle { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .card-body { padding: 16px 20px 20px; }
+
+  /* ETF TABLE */
+  .etf-table { width: 100%; border-collapse: collapse; }
+  .etf-table th { text-align: left; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  .etf-table td { padding: 14px 12px; border-bottom: 1px solid rgba(30,45,69,0.5); font-size: 13px; vertical-align: middle; }
+  .etf-table tr:last-child td { border-bottom: none; }
+  .etf-table tr:hover td { background: rgba(30,45,69,0.4); }
+  .etf-ticker { font-weight: 700; color: var(--text); font-size: 14px; }
+  .etf-name { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .type-badge { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.3px; }
+  .type-index { background: rgba(59,130,246,0.15); color: var(--index-color); }
+  .type-sector { background: rgba(139,92,246,0.15); color: var(--sector-color); }
+  .pct-positive { color: var(--green); font-weight: 600; }
+  .pct-negative { color: var(--red); font-weight: 600; }
+  .pct-neutral { color: var(--muted); }
+
+  /* PROGRESS BAR */
+  .progress-bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin-top: 4px; }
+  .progress-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease; }
+  .progress-index { background: var(--index-color); }
+  .progress-sector { background: var(--sector-color); }
+
+  /* REBALANCING */
+  .rebal-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+  .rebal-item { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid rgba(30,45,69,0.5); }
+  .rebal-item:last-child { border-bottom: none; }
+  .rebal-ticker { font-weight: 700; font-size: 14px; width: 80px; flex-shrink: 0; }
+  .rebal-info { flex: 1; }
+  .rebal-bar-wrap { height: 8px; background: var(--border); border-radius: 4px; position: relative; margin-top: 6px; overflow: visible; }
+  .rebal-current { height: 8px; border-radius: 4px; background: var(--primary); position: absolute; top: 0; left: 0; transition: width 0.4s; }
+  .rebal-target-line { position: absolute; top: -4px; width: 2px; height: 16px; background: var(--yellow); border-radius: 1px; }
+  .rebal-action { text-align: right; flex-shrink: 0; min-width: 110px; }
+  .action-buy { color: var(--green); font-weight: 700; font-size: 13px; }
+  .action-sell { color: var(--red); font-weight: 700; font-size: 13px; }
+  .action-hold { color: var(--muted); font-weight: 600; font-size: 13px; }
+  .action-label { font-size: 11px; color: var(--muted); }
+
+  /* CHART CONTAINER */
+  .chart-container { position: relative; }
+
+  /* MODAL */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1000; backdrop-filter: blur(4px); }
+  .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; width: 520px; max-height: 90vh; overflow-y: auto; }
+  .modal-header { padding: 24px 24px 0; display: flex; justify-content: space-between; align-items: center; }
+  .modal-title { font-size: 18px; font-weight: 700; }
+  .modal-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 20px; padding: 4px; }
+  .modal-close:hover { color: var(--text); }
+  .modal-body { padding: 20px 24px 24px; }
+
+  /* FORM */
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .form-group { display: flex; flex-direction: column; gap: 6px; }
+  .form-group.full { grid-column: 1 / -1; }
+  label { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
+  input, select { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 14px; padding: 10px 12px; outline: none; transition: border-color 0.15s; width: 100%; }
+  input:focus, select:focus { border-color: var(--primary); }
+  input::placeholder { color: var(--muted2); }
+  select option { background: var(--surface2); }
+  .form-hint { font-size: 11px; color: var(--muted); }
+  .form-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 24px; }
+
+  /* TABS */
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  /* EMPTY STATE */
+  .empty-state { text-align: center; padding: 60px 20px; color: var(--muted); }
+  .empty-state-icon { font-size: 48px; margin-bottom: 16px; }
+  .empty-state h3 { font-size: 16px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+  .empty-state p { font-size: 13px; }
+
+  /* LOADING */
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.3); border-top-color: white; border-radius: 50%; animation: spin 0.7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* TOOLTIP LIKE INFO */
+  .info-box { background: rgba(59,130,246,0.08); border: 1px solid rgba(59,130,246,0.2); border-radius: 8px; padding: 12px; font-size: 12px; color: var(--muted); margin-bottom: 16px; }
+  .info-box strong { color: var(--primary); }
+
+  /* CASH INPUT */
+  .cash-input-section { background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 20px; display: flex; align-items: center; gap: 12px; }
+  .cash-input-section label { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .cash-input-section input { background: var(--surface); }
+
+  /* SECTOR TAG */
+  .sector-tag { font-size: 11px; color: var(--muted); background: var(--surface2); padding: 2px 6px; border-radius: 4px; }
+
+  /* PRICE STATUS */
+  .price-status { font-size: 11px; display: flex; align-items: center; gap: 4px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .dot-green { background: var(--green); }
+  .dot-yellow { background: var(--yellow); }
+  .dot-red { background: var(--red); }
+
+  /* DIVIDER */
+  .divider { height: 1px; background: var(--border); margin: 16px 0; }
+
+  /* LEGEND */
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+  /* SCROLL */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* NOTIFICATION */
+  .toast { position: fixed; bottom: 24px; right: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 18px; font-size: 13px; color: var(--text); z-index: 2000; box-shadow: 0 8px 32px rgba(0,0,0,0.4); transform: translateY(20px); opacity: 0; transition: all 0.3s; pointer-events: none; }
+  .toast.show { transform: translateY(0); opacity: 1; }
+
+  /* RESPONSIVE */
+  @media (max-width: 900px) {
+    .stat-grid { grid-template-columns: 1fr 1fr; }
+    .grid-2, .grid-3 { grid-template-columns: 1fr; }
+    .sidebar { width: 180px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <h1>📊 ETF Manager</h1>
+      <p>포트폴리오 관리 시스템</p>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-item active" onclick="switchTab('dashboard')">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h8m-8 6h16"/></svg>
+        대시보드
+      </div>
+      <div class="nav-item" onclick="switchTab('portfolio')">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+        ETF 목록
+      </div>
+      <div class="nav-item" onclick="switchTab('rebalancing')">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3"/></svg>
+        리밸런싱
+      </div>
+      <div class="nav-item" onclick="switchTab('settings')">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+        설정
+      </div>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="exchange-rate-widget">
+        <div>USD/KRW 환율</div>
+        <div class="rate" id="exchangeRateDisplay">로딩 중...</div>
+        <div style="margin-top:6px;">
+          <button class="btn btn-ghost btn-sm" onclick="refreshPrices()" style="width:100%">
+            <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            가격 업데이트
+          </button>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- MAIN CONTENT -->
+  <main class="main">
+
+    <!-- DASHBOARD TAB -->
+    <div class="tab-content active" id="tab-dashboard">
+      <div class="page-header">
+        <div>
+          <div class="page-title">포트폴리오 대시보드</div>
+          <div class="page-subtitle" id="lastUpdatedText">가격 업데이트 전</div>
+        </div>
+        <div class="header-actions">
+          <button class="btn btn-primary" onclick="openAddModal()">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+            ETF 추가
+          </button>
+        </div>
+      </div>
+
+      <!-- STAT CARDS -->
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-label">총 자산 (원화 환산)</div>
+          <div class="stat-value" id="statTotal">₩0</div>
+          <div class="stat-sub" id="statTotalUSD">USD 환산: $0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">평가 손익</div>
+          <div class="stat-value" id="statPnl">₩0</div>
+          <div id="statPnlBadge" class="stat-badge badge-neutral">0.00%</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">지수 ETF 비중</div>
+          <div class="stat-value" id="statIndexPct">0%</div>
+          <div class="stat-sub" id="statIndexVal">₩0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">섹터 ETF 비중</div>
+          <div class="stat-value" id="statSectorPct">0%</div>
+          <div class="stat-sub" id="statSectorVal">₩0</div>
+        </div>
+      </div>
+
+      <!-- CHARTS ROW -->
+      <div class="content-section">
+        <div class="section-grid grid-2">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="card-title">자산 배분 현황</div>
+                <div class="card-subtitle">ETF별 현재 비중</div>
+              </div>
+              <div class="legend" id="allocationLegend"></div>
+            </div>
+            <div class="card-body">
+              <div class="chart-container" style="height:260px">
+                <canvas id="allocationChart"></canvas>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="card-title">목표 vs 현재 비중</div>
+                <div class="card-subtitle">ETF별 비교</div>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="chart-container" style="height:260px">
+                <canvas id="targetChart"></canvas>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- RETURN CHART -->
+        <div class="card" style="margin-top:16px">
+          <div class="card-header">
+            <div>
+              <div class="card-title">ETF별 수익률</div>
+              <div class="card-subtitle">평균단가 대비 현재 수익률 (%)</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="chart-container" style="height:200px">
+              <canvas id="returnChart"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PORTFOLIO TAB -->
+    <div class="tab-content" id="tab-portfolio">
+      <div class="page-header">
+        <div>
+          <div class="page-title">ETF 목록</div>
+          <div class="page-subtitle">보유 ETF 현황 및 수익률</div>
+        </div>
+        <div class="header-actions">
+          <button class="btn btn-ghost" onclick="refreshPrices()">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            가격 업데이트
+          </button>
+          <button class="btn btn-primary" onclick="openAddModal()">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+            ETF 추가
+          </button>
+        </div>
+      </div>
+
+      <div class="content-section" style="margin-top:24px">
+        <div class="card">
+          <div class="card-body" style="padding:0">
+            <div id="etfTableWrap">
+              <div class="empty-state">
+                <div class="empty-state-icon">📋</div>
+                <h3>보유 ETF가 없습니다</h3>
+                <p>우측 상단 'ETF 추가' 버튼으로 ETF를 추가하세요</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- REBALANCING TAB -->
+    <div class="tab-content" id="tab-rebalancing">
+      <div class="page-header">
+        <div>
+          <div class="page-title">리밸런싱</div>
+          <div class="page-subtitle">목표 비중에 맞춰 매수/매도 수량 계산</div>
+        </div>
+      </div>
+
+      <div class="content-section" style="margin-top:24px">
+        <div class="cash-input-section">
+          <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="color:var(--primary);flex-shrink:0"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
+          <label style="white-space:nowrap;text-transform:none;font-size:13px">추가 투자금 (원화):</label>
+          <input type="number" id="additionalCash" placeholder="0" style="max-width:200px" oninput="renderRebalancing()" />
+          <span style="color:var(--muted);font-size:12px">0 입력 시 현재 자산만으로 리밸런싱</span>
+        </div>
+
+        <div class="info-box">
+          <strong>💡 리밸런싱 방법:</strong> 각 ETF의 <strong>목표 비중</strong>을 ETF 목록에서 설정하세요. 현재 비중과 목표 비중의 차이를 바탕으로 매수/매도 수량을 계산합니다. 노란 선(|)이 목표 비중입니다.
+        </div>
+
+        <div id="rebalancingContent">
+          <div class="empty-state">
+            <div class="empty-state-icon">⚖️</div>
+            <h3>ETF를 추가하고 목표 비중을 설정하세요</h3>
+            <p>ETF 목록 탭에서 각 ETF의 목표 비중(%)을 입력하면 리밸런싱 계산이 시작됩니다</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SETTINGS TAB -->
+    <div class="tab-content" id="tab-settings">
+      <div class="page-header">
+        <div>
+          <div class="page-title">설정</div>
+          <div class="page-subtitle">환율 및 기타 설정</div>
+        </div>
+      </div>
+
+      <div class="content-section" style="margin-top:24px">
+        <div class="card">
+          <div class="card-header"><div class="card-title">환율 설정</div></div>
+          <div class="card-body">
+            <div class="form-grid">
+              <div class="form-group">
+                <label>USD/KRW 환율 (직접 입력)</label>
+                <input type="number" id="manualExchangeRate" placeholder="예: 1380" />
+                <span class="form-hint">자동 조회가 실패할 경우 직접 입력하세요</span>
+              </div>
+              <div class="form-group" style="justify-content:flex-end">
+                <button class="btn btn-primary" onclick="applyManualRate()">환율 적용</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <div class="card-header"><div class="card-title">가격 조회 안내</div></div>
+          <div class="card-body">
+            <div class="info-box" style="margin-bottom:12px">
+              <strong>📌 티커 심볼 형식:</strong><br>
+              • <strong>미국 ETF</strong>: SPY, QQQ, VTI, SCHD 등 (그대로 입력)<br>
+              • <strong>국내 ETF</strong>: 069500.KS (KODEX 200), 360750.KS (TIGER 미국S&P500) 등<br>
+              → Yahoo Finance 형식의 티커를 입력하세요
+            </div>
+            <p style="color:var(--muted);font-size:13px;line-height:1.7">
+              가격은 Yahoo Finance API를 통해 조회됩니다. CORS 제한으로 인해 직접 조회가 실패할 경우 프록시 서버를 경유합니다.
+              조회가 계속 실패하면 '수동 가격 입력' 기능을 사용해 직접 현재가를 입력할 수 있습니다.
+            </p>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <div class="card-header"><div class="card-title">데이터 관리</div></div>
+          <div class="card-body">
+            <div style="display:flex;gap:10px;flex-wrap:wrap">
+              <button class="btn btn-ghost" onclick="exportData()">
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                데이터 내보내기 (JSON)
+              </button>
+              <label class="btn btn-ghost" style="cursor:pointer">
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l4-4m0 0l4 4m-4-4v12"/></svg>
+                데이터 가져오기 (JSON)
+                <input type="file" accept=".json" style="display:none" onchange="importData(event)">
+              </label>
+              <button class="btn btn-danger" onclick="clearAllData()">
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                전체 초기화
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- ADD/EDIT ETF MODAL -->
+<div class="modal-overlay" id="etfModal" style="display:none" onclick="closeModalOnOverlay(event)">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="modalTitle">ETF 추가</div>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="editId">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>티커 심볼 *</label>
+          <input type="text" id="fTicker" placeholder="예: SPY, 069500.KS" />
+          <span class="form-hint">Yahoo Finance 티커 형식</span>
+        </div>
+        <div class="form-group">
+          <label>ETF 이름 *</label>
+          <input type="text" id="fName" placeholder="예: SPDR S&P 500 ETF" />
+        </div>
+        <div class="form-group">
+          <label>종류</label>
+          <select id="fType" onchange="toggleSector()">
+            <option value="index">지수 ETF (Index)</option>
+            <option value="sector">섹터 ETF (Sector)</option>
+          </select>
+        </div>
+        <div class="form-group" id="sectorGroup" style="display:none">
+          <label>섹터</label>
+          <input type="text" id="fSector" placeholder="예: 테크, 헬스케어, 에너지" />
+        </div>
+        <div class="form-group">
+          <label>통화</label>
+          <select id="fCurrency">
+            <option value="USD">USD (달러)</option>
+            <option value="KRW">KRW (원화)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>보유 수량</label>
+          <input type="number" id="fQty" placeholder="0" min="0" step="any" />
+        </div>
+        <div class="form-group">
+          <label>평균 매수가 *</label>
+          <input type="number" id="fAvgPrice" placeholder="0.00" min="0" step="any" />
+          <span class="form-hint">선택한 통화 기준</span>
+        </div>
+        <div class="form-group">
+          <label>현재가 (수동)</label>
+          <input type="number" id="fCurrentPrice" placeholder="API 자동 조회" min="0" step="any" />
+          <span class="form-hint">비워두면 API로 조회</span>
+        </div>
+        <div class="form-group full">
+          <label>목표 비중 (%)</label>
+          <input type="number" id="fTargetPct" placeholder="예: 30" min="0" max="100" step="0.1" />
+          <span class="form-hint">포트폴리오 내 목표 비중. 전체 합이 100%가 되도록 설정하세요</span>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-ghost" onclick="closeModal()">취소</button>
+        <button class="btn btn-primary" onclick="saveETF()">저장</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ─── STATE ────────────────────────────────────────────────────
+let state = {
+  etfs: [],
+  exchangeRate: 1380,
+  lastPriceUpdate: null
+};
+
+const COLORS = [
+  '#3b82f6','#8b5cf6','#10b981','#f59e0b','#ef4444',
+  '#06b6d4','#f97316','#84cc16','#e879f9','#6366f1',
+  '#14b8a6','#fb923c','#a3e635','#c084fc','#38bdf8'
+];
+
+// ─── PERSISTENCE ──────────────────────────────────────────────
+function saveState() {
+  localStorage.setItem('etf_portfolio_v2', JSON.stringify(state));
+}
+
+function loadState() {
+  const saved = localStorage.getItem('etf_portfolio_v2');
+  if (saved) {
+    try { state = JSON.parse(saved); } catch(e) {}
+  }
+}
+
+// ─── TABS ─────────────────────────────────────────────────────
+function switchTab(tab) {
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+  document.querySelectorAll('.nav-item')[['dashboard','portfolio','rebalancing','settings'].indexOf(tab)].classList.add('active');
+  if (tab === 'rebalancing') renderRebalancing();
+}
+
+// ─── UTILS ────────────────────────────────────────────────────
+function uid() { return Math.random().toString(36).slice(2, 10); }
+
+function fmtKRW(v) {
+  if (Math.abs(v) >= 1e8) return '₩' + (v/1e8).toFixed(2) + '억';
+  if (Math.abs(v) >= 1e4) return '₩' + Math.round(v).toLocaleString('ko-KR');
+  return '₩' + Math.round(v).toLocaleString('ko-KR');
+}
+
+function fmtUSD(v) { return '$' + v.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}); }
+
+function fmtPct(v) { return (v >= 0 ? '+' : '') + v.toFixed(2) + '%'; }
+
+function toKRW(value, currency) {
+  return currency === 'USD' ? value * state.exchangeRate : value;
+}
+
+function pctClass(v) { return v > 0 ? 'pct-positive' : v < 0 ? 'pct-negative' : 'pct-neutral'; }
+
+function showToast(msg, type = 'info') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.borderColor = type === 'success' ? 'var(--green)' : type === 'error' ? 'var(--red)' : 'var(--border)';
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+// ─── PORTFOLIO CALCULATIONS ───────────────────────────────────
+function calcPortfolio() {
+  let totalKRW = 0, totalCostKRW = 0, indexKRW = 0, sectorKRW = 0;
+
+  const items = state.etfs.map(etf => {
+    const cp = etf.currentPrice || etf.avgPrice;
+    const currentValNative = cp * etf.quantity;
+    const costValNative = etf.avgPrice * etf.quantity;
+    const currentValKRW = toKRW(currentValNative, etf.currency);
+    const costValKRW = toKRW(costValNative, etf.currency);
+    const pnlNative = currentValNative - costValNative;
+    const pnlPct = costValNative > 0 ? (pnlNative / costValNative) * 100 : 0;
+
+    totalKRW += currentValKRW;
+    totalCostKRW += costValKRW;
+    if (etf.type === 'index') indexKRW += currentValKRW;
+    else sectorKRW += currentValKRW;
+
+    return { ...etf, cp, currentValNative, costValNative, currentValKRW, costValKRW, pnlNative, pnlPct };
+  });
+
+  // add weight
+  items.forEach(item => {
+    item.weight = totalKRW > 0 ? (item.currentValKRW / totalKRW) * 100 : 0;
+  });
+
+  const totalPnlKRW = totalKRW - totalCostKRW;
+  const totalPnlPct = totalCostKRW > 0 ? (totalPnlKRW / totalCostKRW) * 100 : 0;
+
+  return { items, totalKRW, totalCostKRW, totalPnlKRW, totalPnlPct, indexKRW, sectorKRW };
+}
+
+// ─── RENDER DASHBOARD ─────────────────────────────────────────
+let allocationChart, targetChart, returnChart;
+
+function renderDashboard() {
+  const p = calcPortfolio();
+
+  // Stat cards
+  document.getElementById('statTotal').textContent = fmtKRW(p.totalKRW);
+  document.getElementById('statTotalUSD').textContent = 'USD 환산: ' + fmtUSD(p.totalKRW / state.exchangeRate);
+  document.getElementById('statPnl').textContent = (p.totalPnlKRW >= 0 ? '+' : '') + fmtKRW(p.totalPnlKRW);
+
+  const badge = document.getElementById('statPnlBadge');
+  badge.textContent = fmtPct(p.totalPnlPct);
+  badge.className = 'stat-badge ' + (p.totalPnlPct > 0 ? 'badge-up' : p.totalPnlPct < 0 ? 'badge-down' : 'badge-neutral');
+
+  const indexPct = p.totalKRW > 0 ? (p.indexKRW / p.totalKRW * 100) : 0;
+  const sectorPct = p.totalKRW > 0 ? (p.sectorKRW / p.totalKRW * 100) : 0;
+  document.getElementById('statIndexPct').textContent = indexPct.toFixed(1) + '%';
+  document.getElementById('statIndexVal').textContent = fmtKRW(p.indexKRW);
+  document.getElementById('statSectorPct').textContent = sectorPct.toFixed(1) + '%';
+  document.getElementById('statSectorVal').textContent = fmtKRW(p.sectorKRW);
+
+  if (state.lastPriceUpdate) {
+    const d = new Date(state.lastPriceUpdate);
+    document.getElementById('lastUpdatedText').textContent = '최근 업데이트: ' + d.toLocaleString('ko-KR');
+  }
+
+  renderCharts(p);
+}
+
+function renderCharts(p) {
+  const labels = p.items.map(i => i.ticker);
+  const weights = p.items.map(i => i.weight);
+  const targets = p.items.map(i => i.targetPct || 0);
+  const returns = p.items.map(i => i.pnlPct);
+  const colors = p.items.map((_, idx) => COLORS[idx % COLORS.length]);
+
+  // Allocation donut
+  const actx = document.getElementById('allocationChart').getContext('2d');
+  if (allocationChart) allocationChart.destroy();
+  if (p.items.length === 0) {
+    allocationChart = null;
+  } else {
+    allocationChart = new Chart(actx, {
+      type: 'doughnut',
+      data: { labels, datasets: [{ data: weights, backgroundColor: colors, borderColor: '#0b0f1a', borderWidth: 2 }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => ` ${ctx.label}: ${ctx.parsed.toFixed(1)}%` } }
+        }
+      }
+    });
+  }
+
+  // Legend
+  const legend = document.getElementById('allocationLegend');
+  legend.innerHTML = p.items.map((item, i) => `
+    <div class="legend-item">
+      <div class="legend-dot" style="background:${colors[i]}"></div>
+      <span>${item.ticker}</span>
+    </div>
+  `).join('');
+
+  // Target vs Current bar
+  const tctx = document.getElementById('targetChart').getContext('2d');
+  if (targetChart) targetChart.destroy();
+  if (p.items.length === 0) {
+    targetChart = null;
+  } else {
+    targetChart = new Chart(tctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: '현재 비중', data: weights, backgroundColor: colors.map(c => c + 'cc'), borderColor: colors, borderWidth: 1, borderRadius: 4 },
+          { label: '목표 비중', data: targets, backgroundColor: 'rgba(245,158,11,0.2)', borderColor: '#f59e0b', borderWidth: 1.5, borderRadius: 4, borderDash: [4,2] }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {
+          x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#94a3b8', font: { size: 11 } } },
+          y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#94a3b8', font: { size: 11 }, callback: v => v + '%' } }
+        },
+        plugins: {
+          legend: { labels: { color: '#94a3b8', font: { size: 11 }, boxWidth: 12, padding: 12 } },
+          tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}%` } }
+        }
+      }
+    });
+  }
+
+  // Return bar
+  const rctx = document.getElementById('returnChart').getContext('2d');
+  if (returnChart) returnChart.destroy();
+  if (p.items.length === 0) {
+    returnChart = null;
+  } else {
+    returnChart = new Chart(rctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          label: '수익률(%)',
+          data: returns,
+          backgroundColor: returns.map(r => r >= 0 ? 'rgba(16,185,129,0.5)' : 'rgba(239,68,68,0.5)'),
+          borderColor: returns.map(r => r >= 0 ? '#10b981' : '#ef4444'),
+          borderWidth: 1, borderRadius: 4
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {
+          x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#94a3b8', font: { size: 11 } } },
+          y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#94a3b8', font: { size: 11 }, callback: v => v + '%' } }
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => ` 수익률: ${fmtPct(ctx.parsed.y)}` } }
+        }
+      }
+    });
+  }
+}
+
+// ─── RENDER ETF TABLE ─────────────────────────────────────────
+function renderETFTable() {
+  const wrap = document.getElementById('etfTableWrap');
+  const p = calcPortfolio();
+
+  if (p.items.length === 0) {
+    wrap.innerHTML = `<div class="empty-state"><div class="empty-state-icon">📋</div><h3>보유 ETF가 없습니다</h3><p>우측 상단 'ETF 추가' 버튼으로 ETF를 추가하세요</p></div>`;
+    return;
+  }
+
+  const rows = p.items.map((item, i) => {
+    const color = COLORS[i % COLORS.length];
+    const hasPrice = !!item.currentPrice;
+    const priceSrc = hasPrice ? (item._priceSource === 'manual' ? '수동' : 'API') : '미조회';
+    const dotClass = hasPrice ? (item._priceSource === 'manual' ? 'dot-yellow' : 'dot-green') : 'dot-red';
+    const cpDisplay = item.currency === 'USD' ? fmtUSD(item.cp) : '₩' + item.cp.toLocaleString('ko-KR');
+    const valDisplay = item.currency === 'USD' ? fmtUSD(item.currentValNative) + ' (' + fmtKRW(item.currentValKRW) + ')' : fmtKRW(item.currentValKRW);
+    const diffFromTarget = item.targetPct ? (item.weight - item.targetPct).toFixed(1) : null;
+
+    return `<tr>
+      <td>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="width:4px;height:40px;border-radius:2px;background:${color};flex-shrink:0"></div>
+          <div>
+            <div class="etf-ticker">${item.ticker}</div>
+            <div class="etf-name">${item.name}</div>
+          </div>
+        </div>
+      </td>
+      <td>
+        <span class="type-badge type-${item.type}">${item.type === 'index' ? '지수' : '섹터'}</span>
+        ${item.sector ? `<span class="sector-tag" style="margin-left:4px">${item.sector}</span>` : ''}
+      </td>
+      <td>
+        <div>${cpDisplay}</div>
+        <div class="price-status"><div class="dot ${dotClass}"></div>${priceSrc}</div>
+      </td>
+      <td style="color:var(--muted)">${item.quantity.toLocaleString()}</td>
+      <td>${valDisplay}</td>
+      <td class="${pctClass(item.pnlPct)}">${fmtPct(item.pnlPct)}</td>
+      <td>
+        <div>${item.weight.toFixed(1)}%</div>
+        <div class="progress-bar" style="width:80px"><div class="progress-fill progress-${item.type}" style="width:${Math.min(item.weight,100)}%"></div></div>
+        ${item.targetPct ? `<div style="font-size:11px;color:var(--muted)">목표: ${item.targetPct}% (${diffFromTarget > 0 ? '+' : ''}${diffFromTarget}%)</div>` : '<div style="font-size:11px;color:var(--muted2)">목표 미설정</div>'}
+      </td>
+      <td>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-ghost btn-sm" onclick="openEditModal('${item.id}')">편집</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteETF('${item.id}')">삭제</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `<table class="etf-table">
+    <thead><tr>
+      <th>ETF</th><th>종류</th><th>현재가</th><th>수량</th><th>평가금액</th><th>수익률</th><th>비중/목표</th><th>관리</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// ─── RENDER REBALANCING ───────────────────────────────────────
+function renderRebalancing() {
+  const content = document.getElementById('rebalancingContent');
+  const p = calcPortfolio();
+
+  if (p.items.length === 0) {
+    content.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚖️</div><h3>ETF를 추가하고 목표 비중을 설정하세요</h3><p>ETF 목록 탭에서 각 ETF의 목표 비중(%)을 입력하면 리밸런싱 계산이 시작됩니다</p></div>`;
+    return;
+  }
+
+  const hasTargets = p.items.some(i => i.targetPct > 0);
+  if (!hasTargets) {
+    content.innerHTML = `<div class="empty-state"><div class="empty-state-icon">🎯</div><h3>목표 비중을 설정하세요</h3><p>ETF 목록 탭 → 편집 → 목표 비중(%) 입력</p></div>`;
+    return;
+  }
+
+  const addCash = parseFloat(document.getElementById('additionalCash').value) || 0;
+  const newTotal = p.totalKRW + addCash;
+  const totalTargetPct = p.items.reduce((s, i) => s + (i.targetPct || 0), 0);
+
+  const rebalItems = p.items.map(item => {
+    if (!item.targetPct) return null;
+    const targetKRW = newTotal * (item.targetPct / 100);
+    const diffKRW = targetKRW - item.currentValKRW;
+    const cpKRW = toKRW(item.cp, item.currency);
+    const sharesDiff = cpKRW > 0 ? diffKRW / cpKRW : 0;
+    return { ...item, targetKRW, diffKRW, sharesDiff, cpKRW };
+  }).filter(Boolean);
+
+  const rows = rebalItems.map(item => {
+    const action = Math.abs(item.sharesDiff) < 0.01 ? 'hold' : item.sharesDiff > 0 ? 'buy' : 'sell';
+    const actionLabel = action === 'buy' ? '매수' : action === 'sell' ? '매도' : '유지';
+    const actionClass = action === 'buy' ? 'action-buy' : action === 'sell' ? 'action-sell' : 'action-hold';
+    const diffDisplay = item.currency === 'USD'
+      ? fmtUSD(Math.abs(item.diffKRW) / state.exchangeRate)
+      : fmtKRW(Math.abs(item.diffKRW));
+    const sharesDisplay = Math.abs(item.sharesDiff) < 0.01 ? '-'
+      : (action === 'buy' ? '+' : '-') + Math.abs(item.sharesDiff).toFixed(2) + '주';
+
+    const maxPct = Math.max(...p.items.map(i => i.targetPct || 0), 1);
+    const currentBarW = Math.min((item.weight / maxPct) * 100, 100);
+    const targetLineX = Math.min((item.targetPct / maxPct) * 100, 100);
+
+    return `<div class="rebal-item">
+      <div class="rebal-ticker">${item.ticker}<div style="font-size:11px;color:var(--muted);font-weight:400">${item.name.length > 12 ? item.name.slice(0,12)+'…' : item.name}</div></div>
+      <div class="rebal-info">
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted)">
+          <span>현재 ${item.weight.toFixed(1)}%</span>
+          <span>목표 ${item.targetPct}%</span>
+        </div>
+        <div class="rebal-bar-wrap">
+          <div class="rebal-current" style="width:${currentBarW}%"></div>
+          <div class="rebal-target-line" style="left:${targetLineX}%"></div>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">
+          현재 ${item.currency === 'USD' ? fmtUSD(item.currentValNative) : fmtKRW(item.currentValKRW)} → 목표 ${fmtKRW(item.targetKRW)}
+        </div>
+      </div>
+      <div class="rebal-action">
+        <div class="${actionClass}">${action === 'hold' ? '유지' : sharesDisplay}</div>
+        <div class="action-label">${action === 'hold' ? '조정 불필요' : actionLabel + ' ' + diffDisplay}</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const warningHtml = Math.abs(totalTargetPct - 100) > 0.5
+    ? `<div style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:8px;padding:12px;margin-bottom:16px;font-size:12px;color:var(--yellow)">
+        ⚠️ 목표 비중 합계: <strong>${totalTargetPct.toFixed(1)}%</strong> (100%가 되도록 조정하세요)
+       </div>` : '';
+
+  content.innerHTML = `
+    ${warningHtml}
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">리밸런싱 계획</div>
+        <div style="font-size:12px;color:var(--muted)">
+          총 자산: ${fmtKRW(p.totalKRW)} ${addCash > 0 ? `+ 추가 ${fmtKRW(addCash)} = ${fmtKRW(newTotal)}` : ''}
+        </div>
+      </div>
+      <div class="card-body">
+        <div style="display:flex;gap:12px;margin-bottom:12px;font-size:12px;color:var(--muted)">
+          <span style="display:flex;align-items:center;gap:4px"><div style="width:10px;height:6px;background:var(--primary);border-radius:2px"></div>현재 비중</span>
+          <span style="display:flex;align-items:center;gap:4px"><div style="width:2px;height:14px;background:var(--yellow);border-radius:1px"></div>목표 비중</span>
+        </div>
+        ${rows}
+      </div>
+    </div>
+  `;
+}
+
+// ─── MODAL ────────────────────────────────────────────────────
+function openAddModal() {
+  document.getElementById('modalTitle').textContent = 'ETF 추가';
+  document.getElementById('editId').value = '';
+  ['fTicker','fName','fSector','fQty','fAvgPrice','fCurrentPrice','fTargetPct'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('fType').value = 'index';
+  document.getElementById('fCurrency').value = 'USD';
+  document.getElementById('sectorGroup').style.display = 'none';
+  document.getElementById('etfModal').style.display = 'flex';
+}
+
+function openEditModal(id) {
+  const etf = state.etfs.find(e => e.id === id);
+  if (!etf) return;
+  document.getElementById('modalTitle').textContent = 'ETF 편집';
+  document.getElementById('editId').value = id;
+  document.getElementById('fTicker').value = etf.ticker;
+  document.getElementById('fName').value = etf.name;
+  document.getElementById('fType').value = etf.type;
+  document.getElementById('fSector').value = etf.sector || '';
+  document.getElementById('fCurrency').value = etf.currency;
+  document.getElementById('fQty').value = etf.quantity;
+  document.getElementById('fAvgPrice').value = etf.avgPrice;
+  document.getElementById('fCurrentPrice').value = etf.currentPrice || '';
+  document.getElementById('fTargetPct').value = etf.targetPct || '';
+  document.getElementById('sectorGroup').style.display = etf.type === 'sector' ? 'flex' : 'none';
+  document.getElementById('etfModal').style.display = 'flex';
+}
+
+function closeModal() { document.getElementById('etfModal').style.display = 'none'; }
+
+function closeModalOnOverlay(e) {
+  if (e.target === document.getElementById('etfModal')) closeModal();
+}
+
+function toggleSector() {
+  document.getElementById('sectorGroup').style.display =
+    document.getElementById('fType').value === 'sector' ? 'flex' : 'none';
+}
+
+function saveETF() {
+  const ticker = document.getElementById('fTicker').value.trim().toUpperCase();
+  const name = document.getElementById('fName').value.trim();
+  const qty = parseFloat(document.getElementById('fQty').value) || 0;
+  const avgPrice = parseFloat(document.getElementById('fAvgPrice').value) || 0;
+
+  if (!ticker || !name) { showToast('티커와 이름은 필수입니다', 'error'); return; }
+  if (avgPrice <= 0) { showToast('평균 매수가를 입력하세요', 'error'); return; }
+
+  const cpInput = parseFloat(document.getElementById('fCurrentPrice').value) || null;
+  const editId = document.getElementById('editId').value;
+
+  const etfData = {
+    ticker,
+    name,
+    type: document.getElementById('fType').value,
+    sector: document.getElementById('fSector').value.trim(),
+    currency: document.getElementById('fCurrency').value,
+    quantity: qty,
+    avgPrice,
+    currentPrice: cpInput,
+    _priceSource: cpInput ? 'manual' : null,
+    targetPct: parseFloat(document.getElementById('fTargetPct').value) || 0
+  };
+
+  if (editId) {
+    const idx = state.etfs.findIndex(e => e.id === editId);
+    if (idx !== -1) {
+      state.etfs[idx] = { ...state.etfs[idx], ...etfData };
+      showToast('ETF가 업데이트되었습니다', 'success');
+    }
+  } else {
+    state.etfs.push({ id: uid(), ...etfData });
+    showToast('ETF가 추가되었습니다', 'success');
+  }
+
+  saveState();
+  closeModal();
+  renderAll();
+}
+
+function deleteETF(id) {
+  if (!confirm('이 ETF를 삭제하시겠습니까?')) return;
+  state.etfs = state.etfs.filter(e => e.id !== id);
+  saveState();
+  renderAll();
+  showToast('삭제되었습니다');
+}
+
+// ─── PRICE FETCHING ───────────────────────────────────────────
+async function fetchYahooPrice(ticker) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=1d&interval=1d`;
+  const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+
+  // Try direct first
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (res.ok) {
+      const data = await res.json();
+      const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
+      if (price) return price;
+    }
+  } catch(e) {}
+
+  // Fallback to proxy
+  try {
+    const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
+    if (res.ok) {
+      const data = await res.json();
+      const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
+      if (price) return price;
+    }
+  } catch(e) {}
+
+  return null;
+}
+
+async function fetchExchangeRate() {
+  try {
+    const res = await fetch('https://api.exchangerate-api.com/v4/latest/USD', { signal: AbortSignal.timeout(5000) });
+    if (res.ok) {
+      const data = await res.json();
+      return data?.rates?.KRW || null;
+    }
+  } catch(e) {}
+  // fallback proxy
+  try {
+    const url = 'https://api.exchangerate-api.com/v4/latest/USD';
+    const res = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(8000) });
+    if (res.ok) {
+      const data = await res.json();
+      return data?.rates?.KRW || null;
+    }
+  } catch(e) {}
+  return null;
+}
+
+async function refreshPrices() {
+  if (state.etfs.length === 0) { showToast('ETF를 먼저 추가하세요'); return; }
+
+  const btn = event?.target?.closest('.btn');
+  const origHTML = btn ? btn.innerHTML : null;
+  if (btn) btn.innerHTML = '<div class="spinner"></div> 업데이트 중...';
+
+  showToast('가격 조회 중...');
+
+  // Exchange rate
+  const rate = await fetchExchangeRate();
+  if (rate) {
+    state.exchangeRate = rate;
+    document.getElementById('exchangeRateDisplay').textContent = '₩' + Math.round(rate).toLocaleString('ko-KR');
+  }
+
+  // ETF prices
+  let successCount = 0;
+  for (const etf of state.etfs) {
+    // skip if manually set
+    if (etf._priceSource === 'manual' && etf.currentPrice) continue;
+    const price = await fetchYahooPrice(etf.ticker);
+    if (price) {
+      etf.currentPrice = price;
+      etf._priceSource = 'api';
+      successCount++;
+    }
+  }
+
+  state.lastPriceUpdate = new Date().toISOString();
+  saveState();
+  renderAll();
+
+  if (btn) btn.innerHTML = origHTML;
+  showToast(`가격 업데이트 완료 (${successCount}/${state.etfs.filter(e => e._priceSource !== 'manual').length}개 성공)`, 'success');
+}
+
+// ─── EXCHANGE RATE ─────────────────────────────────────────────
+function applyManualRate() {
+  const rate = parseFloat(document.getElementById('manualExchangeRate').value);
+  if (!rate || rate <= 0) { showToast('올바른 환율을 입력하세요', 'error'); return; }
+  state.exchangeRate = rate;
+  document.getElementById('exchangeRateDisplay').textContent = '₩' + Math.round(rate).toLocaleString('ko-KR');
+  saveState();
+  renderAll();
+  showToast('환율이 적용되었습니다', 'success');
+}
+
+// ─── DATA EXPORT/IMPORT ───────────────────────────────────────
+function exportData() {
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'etf-portfolio-' + new Date().toISOString().slice(0,10) + '.json';
+  a.click();
+  showToast('데이터를 내보냈습니다', 'success');
+}
+
+function importData(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const imported = JSON.parse(e.target.result);
+      if (imported.etfs) {
+        state = imported;
+        saveState();
+        renderAll();
+        showToast('데이터를 가져왔습니다', 'success');
+      } else {
+        showToast('올바른 포트폴리오 파일이 아닙니다', 'error');
+      }
+    } catch(err) {
+      showToast('파일 파싱 오류', 'error');
+    }
+  };
+  reader.readAsText(file);
+}
+
+function clearAllData() {
+  if (!confirm('모든 데이터를 초기화하시겠습니까? 이 작업은 되돌릴 수 없습니다.')) return;
+  state = { etfs: [], exchangeRate: 1380, lastPriceUpdate: null };
+  saveState();
+  renderAll();
+  showToast('초기화되었습니다');
+}
+
+// ─── RENDER ALL ───────────────────────────────────────────────
+function renderAll() {
+  renderDashboard();
+  renderETFTable();
+  // rebalancing only re-renders if tab is active
+  if (document.getElementById('tab-rebalancing').classList.contains('active')) {
+    renderRebalancing();
+  }
+  document.getElementById('exchangeRateDisplay').textContent = '₩' + Math.round(state.exchangeRate).toLocaleString('ko-KR');
+}
+
+// ─── INIT ─────────────────────────────────────────────────────
+loadState();
+renderAll();
+
+// Auto-fetch exchange rate on load
+fetchExchangeRate().then(rate => {
+  if (rate) {
+    state.exchangeRate = rate;
+    document.getElementById('exchangeRateDisplay').textContent = '₩' + Math.round(rate).toLocaleString('ko-KR');
+    saveState();
+    renderAll();
+  } else {
+    document.getElementById('exchangeRateDisplay').textContent = '₩' + Math.round(state.exchangeRate).toLocaleString('ko-KR') + ' (캐시)';
+  }
+});
+</script>
+</body>
+</html>
