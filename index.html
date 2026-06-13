@@ -1092,13 +1092,12 @@ async function saveFbConfig(){
   try{
     let txt=v('fb-cfg-input');
     if(!txt){toast('⚠️ Firebase config를 입력하세요');return}
-    // Firebase Console에서 복사한 JS 형식도 허용
-    txt=txt.trim();
-    // const firebaseConfig = { ... }; 형식 처리
-    txt=txt.replace(/^const\s+\w+\s*=\s*/,'').replace(/;?\s*$/,'').trim();
-    // 중괄호만 추출
-    const start=txt.indexOf('{');const end=txt.lastIndexOf('}');
-    if(start!==-1&&end!==-1) txt=txt.slice(start,end+1);
+    // 주석줄, import줄 제거
+    txt=txt.split('\n').filter(l=>{const t=l.trim();return !t.startsWith('//')&&!t.startsWith('import')&&!t.startsWith('export')}).join('\n');
+    // apiKey가 포함된 객체 블록 추출
+    const m=txt.match(/\{([\s\S]*?apiKey[\s\S]*?)\}/);
+    if(m) txt='{'+m[1]+'}';
+    else{const s=txt.indexOf('{');const e=txt.lastIndexOf('}');if(s!==-1&&e!==-1)txt=txt.slice(s,e+1);}
     // JS 객체 키(따옴표 없는)를 JSON 키로 변환
     txt=txt.replace(/([{,]\s*)([a-zA-Z_]\w*)(\s*:)/g,'$1"$2"$3');
     // 후행 쉼표 제거
