@@ -250,20 +250,49 @@ async function fetchNaverStockHtml(code, dbg) {
         }
       }
 
-      // iframe에서 분배금 직접 조회
+      // iframe에서 분배금 직접 조회 (wisereport.co.kr)
       for (const iframeSrc of iframes) {
         const fullUrl = iframeSrc.startsWith('http') ? iframeSrc : `https://finance.naver.com${iframeSrc}`;
         const { ok: iok, html: ihtml, encoding: ienc } = await fetchKrHtml(fullUrl);
         dbg.push({ step: 'coinfo_iframe_fetch', src: fullUrl, ok: iok, len: ihtml?.length ?? 0, encoding: ienc });
         if (!iok || !ihtml) continue;
 
+        // 디버그: 날짜 패턴 주변 HTML 구조 확인
+        const datePatterns = [
+          /\d{4}\.\d{2}\.\d{2}/,   // 2024.03.08
+          /\d{4}-\d{2}-\d{2}/,     // 2024-03-08
+          /\d{4}년\s*\d{1,2}월\s*\d{1,2}일/, // 2024년 3월 8일
+          /\d{8}/,                  // 20240308
+        ];
+        for (const pat of datePatterns) {
+          const m = ihtml.match(pat);
+          if (m) {
+            const idx = ihtml.indexOf(m[0]);
+            dbg.push({ step: 'iframe_date_found', pattern: pat.toString(), date: m[0],
+              ctx: ihtml.slice(Math.max(0,idx-150), idx+400) });
+            break;
+          }
+        }
+
+        // wisereport 구조: td 내부 텍스트 추출 (중첩 태그 포함)
         const iRe = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
         let itr;
         while ((itr = iRe.exec(ihtml)) !== null) {
           const cells = [...itr[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)]
-            .map(c => c[1].replace(/<[^>]+>/g, '').trim());
-          if (cells.length >= 2 && /^\d{4}\.\d{2}\.\d{2}$/.test(cells[0])) {
-            const date = cells[0].replace(/\./g, '-');
+            .map(c => c[1].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, '').trim());
+          if (!cells.length) continue;
+
+          // 날짜 형식 다양하게 탐지
+          let date = null;
+          const dateCell = cells[0];
+          const m1 = dateCell.match(/(\d{4})\.(\d{2})\.(\d{2})/);
+          const m2 = dateCell.match(/(\d{4})-(\d{2})-(\d{2})/);
+          const m3 = dateCell.match(/(\d{4})(\d{2})(\d{2})/);
+          if (m1) date = `${m1[1]}-${m1[2]}-${m1[3]}`;
+          else if (m2) date = `${m2[1]}-${m2[2]}-${m2[3]}`;
+          else if (m3 && m3[0].length === 8) date = `${m3[1]}-${m3[2]}-${m3[3]}`;
+
+          if (date) {
             for (let i = 1; i < cells.length; i++) {
               const amount = parseFloat(cells[i].replace(/,/g, ''));
               if (!isNaN(amount) && amount > 0 && amount < 1_000_000) {
