@@ -83,82 +83,112 @@ async function fetchKrHtml(url) {
   }
 }
 
-// ── ① 네이버 ETF 분배금 JSON API ─────────────────────────────────────────
+// ── ① 네이버 ETF 분배금 JSON API (여러 URL 패턴 시도) ───────────────────
 async function fetchNaverEtfJson(code, dbg) {
-  const url = `https://api.stock.naver.com/api/item/etf/${code}/distribution?page=1&pageSize=24`;
-  try {
-    const res = await fetch(url, {
-      headers: { ...NAVER_HEADERS, Accept: 'application/json, */*' },
-      signal: AbortSignal.timeout(6000),
-    });
-    dbg.push({ step: 'naver_json', url, status: res.status });
-    if (!res.ok) return null;
+  const candidates = [
+    `https://api.stock.naver.com/api/item/etf/${code}/distribution?page=1&pageSize=24`,
+    `https://m.stock.naver.com/api/item/etf/${code}/distribution?page=1&pageSize=24`,
+    `https://api.stock.naver.com/api/item/domesticStock/etf/${code}/distribution`,
+  ];
 
-    const json = await res.json();
-    dbg.push({ step: 'naver_json_body', keys: Object.keys(json) });
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url, {
+        headers: { ...NAVER_HEADERS, Accept: 'application/json, */*' },
+        signal: AbortSignal.timeout(5000),
+      });
+      dbg.push({ step: 'naver_json_try', url, status: res.status });
+      if (!res.ok) continue;
 
-    const list = json?.distributionList ?? json?.list ?? json?.data ?? [];
-    if (!Array.isArray(list) || !list.length) {
-      dbg.push({ step: 'naver_json_empty', sample: JSON.stringify(json).slice(0, 300) });
-      return null;
-    }
+      const json = await res.json();
+      dbg.push({ step: 'naver_json_body', url, keys: Object.keys(json), sample: JSON.stringify(json).slice(0, 400) });
 
-    const history = [];
-    for (const item of list) {
-      const rawDate = item.standardDate ?? item.date ?? item.exDate ?? '';
-      const date    = rawDate.replace(/\./g, '-');
-      const amount  = parseFloat(
-        String(item.distribution ?? item.amount ?? item.divAmount ?? 0).replace(/,/g, '')
-      );
-      if (/^\d{4}-\d{2}-\d{2}$/.test(date) && amount > 0) {
-        history.push({ date, amount });
+      const list = json?.distributionList ?? json?.list ?? json?.data ?? json?.result ?? [];
+      if (!Array.isArray(list) || !list.length) continue;
+
+      const history = [];
+      for (const item of list) {
+        const rawDate = item.standardDate ?? item.date ?? item.exDate ?? '';
+        const date    = rawDate.replace(/\./g, '-');
+        const amount  = parseFloat(
+          String(item.distribution ?? item.amount ?? item.divAmount ?? 0).replace(/,/g, '')
+        );
+        if (/^\d{4}-\d{2}-\d{2}$/.test(date) && amount > 0) {
+          history.push({ date, amount });
+        }
       }
+      if (history.length) return buildResult(code, history, 'KRW');
+    } catch (e) {
+      dbg.push({ step: 'naver_json_error', url, error: e.message });
     }
-    return history.length ? buildResult(code, history, 'KRW') : null;
-  } catch (e) {
-    dbg.push({ step: 'naver_json_error', error: e.message });
-    return null;
   }
+  return null;
 }
 
-// ── ② 네이버 ETF 페이지 HTML 스크래핑 ───────────────────────────────────
+// ── ② 네이버 ETF 분배금 HTML (여러 URL + iframe 탐지) ───────────────────
 async function fetchNaverEtfHtml(code, dbg) {
-  const url = `https://finance.naver.com/fund/etfItemDetail.naver?itemCode=${code}`;
-  try {
-    const { ok, status, html } = await fetchKrHtml(url);
-    dbg.push({ step: 'naver_etf_html', url, status, htmlLen: html?.length ?? 0 });
-    if (!ok || !html) return null;
+  const candidates = [
+    `https://finance.naver.com/fund/etfItemDetail.naver?itemCode=${code}`,
+    `https://finance.naver.com/item/main.naver?code=${code}`,
+    `https://finance.naver.com/fund/etfDividend.naver?itemCode=${code}`,
+  ];
 
-    // 한글 깨짐 여부 확인용
-    const hasKorean = /분배기준일|분배금/.test(html);
-    dbg.push({ step: 'naver_etf_html_korean', hasKorean, sample: html.slice(0, 200) });
+  for (const url of candidates) {
+    try {
+      const { ok, status, html } = await fetchKrHtml(url);
+      dbg.push({ step: 'naver_etf_html_try', url, status, htmlLen: html?.length ?? 0 });
+      if (!ok || !html) continue;
 
-    const history = [];
-    const section = html.match(/분배기준일[\s\S]{0,8000}/);
-    if (section) {
-      const rowRe = /(\d{4}\.\d{2}\.\d{2})<\/td>[\s\S]*?<td[^>]*>\s*([\d,]+)\s*<\/td>/g;
-      let m;
-      while ((m = rowRe.exec(section[0])) !== null) {
-        const date   = m[1].replace(/\./g, '-');
-        const amount = parseFloat(m[2].replace(/,/g, ''));
-        if (amount > 0) history.push({ date, amount });
+      // iframe URL 탐지
+      const iframes = [...html.matchAll(/<iframe[^>]+src="([^"]+)"/gi)].map(m => m[1]);
+      if (iframes.length) dbg.push({ step: 'iframes_found', url, iframes });
+
+      // 키워드 탐지 + 주변 샘플
+      for (const kw of ['분배기준일', '분배금', '배당기준일']) {
+        const idx = html.indexOf(kw);
+        if (idx >= 0) {
+          dbg.push({ step: `keyword_${kw}`, url, ctx: html.slice(Math.max(0,idx-50), idx+400) });
+          break;
+        }
       }
-    }
-    if (!history.length) {
-      const altRe = /(\d{4})\.(\d{2})\.(\d{2})[^<]*<\/td>[\s\S]*?<td[^>]*>\s*([\d,]+)\s*<\/td>/g;
-      let m2;
-      while ((m2 = altRe.exec(html)) !== null) {
-        const date   = `${m2[1]}-${m2[2]}-${m2[3]}`;
-        const amount = parseFloat(m2[4].replace(/,/g, ''));
-        if (amount > 0 && amount < 1_000_000) history.push({ date, amount });
+
+      const history = [];
+      const section = html.match(/(분배기준일|배당기준일)[\s\S]{0,8000}/);
+      if (section) {
+        const rowRe = /(\d{4}\.\d{2}\.\d{2})<\/td>[\s\S]*?<td[^>]*>\s*([\d,]+)\s*<\/td>/g;
+        let m;
+        while ((m = rowRe.exec(section[0])) !== null) {
+          const date   = m[1].replace(/\./g, '-');
+          const amount = parseFloat(m[2].replace(/,/g, ''));
+          if (amount > 0) history.push({ date, amount });
+        }
       }
+
+      // 관련 iframe 직접 조회
+      for (const iframeSrc of iframes) {
+        if (!/div|distrib|etf/i.test(iframeSrc)) continue;
+        const fullUrl = iframeSrc.startsWith('http') ? iframeSrc : `https://finance.naver.com${iframeSrc}`;
+        const { ok: iok, html: ihtml } = await fetchKrHtml(fullUrl);
+        dbg.push({ step: 'iframe_fetch', src: fullUrl, ok: iok, len: ihtml?.length ?? 0 });
+        if (!iok || !ihtml) continue;
+        const iRe = /(\d{4}\.\d{2}\.\d{2})<\/td>[\s\S]*?<td[^>]*>\s*([\d,]+)\s*<\/td>/g;
+        let im;
+        while ((im = iRe.exec(ihtml)) !== null) {
+          const date   = im[1].replace(/\./g, '-');
+          const amount = parseFloat(im[2].replace(/,/g, ''));
+          if (amount > 0 && amount < 1_000_000) history.push({ date, amount });
+        }
+      }
+
+      if (history.length) {
+        dbg.push({ step: 'naver_etf_html_ok', url, count: history.length });
+        return buildResult(code, history, 'KRW');
+      }
+    } catch (e) {
+      dbg.push({ step: 'naver_etf_html_error', error: e.message });
     }
-    dbg.push({ step: 'naver_etf_html_rows', count: history.length });
-    return history.length ? buildResult(code, history, 'KRW') : null;
-  } catch (e) {
-    dbg.push({ step: 'naver_etf_html_error', error: e.message });
-    return null;
   }
+  return null;
 }
 
 // ── ③ 네이버 배당/분배금 HTML 스크래핑 ──────────────────────────────────
