@@ -266,12 +266,15 @@ const mkState=()=>({
   transactions:[],
   cashflows:[],
   targets:{},
-  notes:{},        // {ticker:"text"}
-  dividends:[],    // [{id,ticker,name,exDate,payDate,amtPerShare,currency,received}]
-  history:[],      // [{date,totalVal,totalCost,kospi,sp500}]
+  notes:{},           // {ticker:"text"}
+  etfCategories:{},   // {ticker:'monthly'|'index'|'sector'|'stock'}
+  dividends:[],       // [{id,ticker,name,exDate,payDate,amtPerShare,currency,received}]
+  history:[],         // [{date,totalVal,totalCost,kospi,sp500}]
   prices:{},
   settings:{manualRate:null}
 });
+const ETF_CAT_LABEL={monthly:'월배당 ETF',index:'지수 ETF',sector:'섹터 ETF',stock:'개별주식',''  :'미분류'};
+const ETF_CAT_COLOR={monthly:'#f59e0b',  index:'#6366f1', sector:'#10b981', stock:'#ef4444',''  :'#64748b'};
 
 let S=mkState(),_charts={};
 
@@ -661,12 +664,35 @@ function renderDashboard(){
 
   if(active.length){
     killChart('alloc');
-    const vals=active.map(x=>{const p=S.prices[x.ticker];return toKRW((p?p.price:x.avgPrice)*x.qty,x.currency)});
+    // 카테고리별 합산
+    const cats=S.etfCategories||{};
+    const grouped={};
+    for(const x of active){
+      const cat=x.assetType==='etf'?(cats[x.ticker]||''):'stock';
+      const p=S.prices[x.ticker];
+      const val=toKRW((p?p.price:x.avgPrice)*x.qty,x.currency);
+      grouped[cat]=(grouped[cat]||0)+val;
+    }
+    // 표시 순서: monthly → index → sector → stock → ''
+    const ORDER=['monthly','index','sector','stock',''];
+    const usedCats=ORDER.filter(c=>grouped[c]>0);
+    const catLabels=usedCats.map(c=>ETF_CAT_LABEL[c]||c);
+    const catVals=usedCats.map(c=>grouped[c]);
+    const catColors=usedCats.map(c=>ETF_CAT_COLOR[c]||'#64748b');
+    const total=catVals.reduce((a,b)=>a+b,0);
     _charts['alloc']=new Chart(document.getElementById('allocChart'),{
       type:'doughnut',
-      data:{labels:active.map(x=>x.ticker),datasets:[{data:vals,backgroundColor:PALETTE.slice(0,vals.length),borderWidth:0}]},
+      data:{labels:catLabels,datasets:[{data:catVals,backgroundColor:catColors,borderWidth:2,borderColor:'#1a1d2e'}]},
       options:{responsive:true,maintainAspectRatio:false,
-        plugins:{legend:{position:'right',labels:{color:'#94a3b8',font:{size:11},boxWidth:12}}}}
+        plugins:{
+          legend:{position:'right',labels:{color:'#94a3b8',font:{size:12},boxWidth:14,
+            generateLabels:chart=>chart.data.labels.map((l,i)=>({
+              text:`${l}  ${(catVals[i]/total*100).toFixed(1)}%`,
+              fillStyle:catColors[i],strokeStyle:catColors[i],hidden:false,index:i
+            }))}},
+          tooltip:{callbacks:{label:c=>`${c.label}: ${fmtKRW(c.raw)} (${(c.raw/total*100).toFixed(1)}%)`}}
+        }
+      }
     });
   }
 }
@@ -689,10 +715,20 @@ function renderHoldings(){
     const tgt=S.targets[x.ticker]||0,diff=curPct-tgt;
     const note=esc(S.notes&&S.notes[x.ticker]?S.notes[x.ticker]:'');
     const qtyStr=x.qty%1===0?x.qty.toLocaleString():x.qty.toFixed(4);
+    const curCat=(S.etfCategories||{})[x.ticker]||'';
+    const catColor=ETF_CAT_COLOR[curCat]||'#64748b';
+    const catOpts=['monthly','index','sector','stock',''].map(c=>
+      `<option value="${c}" ${c===curCat?'selected':''}>${ETF_CAT_LABEL[c]}</option>`).join('');
     holdRows+=`<tr>
       <td><div style="font-weight:600">${esc(x.ticker)}</div>
           <div style="font-size:11px;color:var(--muted)">${esc(x.name)}</div>
-          <span class="badge badge-${x.assetType||'stock'}">${x.assetType==='etf'?'ETF':'주식'}</span></td>
+          <div style="margin-top:4px;display:flex;gap:4px;align-items:center">
+            <span class="badge badge-${x.assetType||'stock'}" style="font-size:10px">${x.assetType==='etf'?'ETF':'주식'}</span>
+            <select onchange="setEtfCategory('${esc(x.ticker)}',this.value)"
+              style="font-size:10px;padding:1px 4px;border-radius:4px;border:1px solid ${catColor};color:${catColor};background:transparent;cursor:pointer">
+              ${catOpts}
+            </select>
+          </div></td>
       <td>${qtyStr}</td>
       <td>${fmtPrice(x.avgPrice,x.currency)}</td>
       <td>${p?fmtPrice(price,x.currency):'<span class="muted">-</span>'}</td>
@@ -1163,6 +1199,14 @@ function setTarget(ticker,val){
 function setNote(ticker,text){
   if(!S.notes)S.notes={};
   S.notes[ticker]=text;save();
+}
+
+function setEtfCategory(ticker,cat){
+  if(!S.etfCategories)S.etfCategories={};
+  S.etfCategories[ticker]=cat;save();
+  // 대시보드 차트만 갱신
+  const el=document.querySelector('.tab.active');
+  if(el&&el.id==='tab-dashboard')renderDashboard();
 }
 
 function saveRate(){
