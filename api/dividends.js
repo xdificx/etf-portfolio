@@ -70,13 +70,12 @@ const KRX_HEADERS = {
 };
 
 async function krxGenerateOtp(urlCode, extraParams = {}) {
-  // 파라미터명: 'url' (bld 아님), 'name': 'fileDown' 필수
+  // data.krx.co.kr 공개 API — auth 없이도 동작 (auth 전송 시 오히려 LOGOUT 발생)
   const body = new URLSearchParams({
-    locale:       'ko_KR',
-    name:         'fileDown',
-    url:          urlCode,
-    csvxls_isNo:  'false',
-    ...(KRX_KEY ? { auth: KRX_KEY } : {}),
+    locale:      'ko_KR',
+    name:        'fileDown',
+    url:         urlCode,
+    csvxls_isNo: 'false',
     ...extraParams,
   });
   const res = await fetch(KRX_OTP_URL, {
