@@ -3,6 +3,9 @@
   "functions": {
     "api/price.js": {
       "maxDuration": 15
+    },
+    "api/dividends.js": {
+      "maxDuration": 30
     }
   }
 }
