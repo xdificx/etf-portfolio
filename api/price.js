@@ -120,11 +120,12 @@ function isKoreanStock(ticker) {
 }
 
 // ── Yahoo Finance 한국 티커 변환 ──────────────────────────────────
-// KRX 코드(숫자로 시작하는 6자리)면 .KS 붙여서 Yahoo에 전달
+// KRX 코드(숫자로 시작하는 6자리)에 .KS 붙여야 Yahoo에서 조회 가능
 function toYahooTicker(ticker) {
   if (/^\d[A-Z0-9]{5}$/i.test(ticker)) return ticker + '.KS';
   return ticker;
 }
+
 
 // ── 메인 핸들러 ───────────────────────────────────────────────────
 export default async function handler(req, res) {
@@ -151,25 +152,31 @@ export default async function handler(req, res) {
       let data = null;
       const isKorean = isKoreanStock(ticker);
 
-      if (hasKis && isKorean) {
-        // 한국 주식/ETF → KIS API 우선
-        data = await fetchKis(ticker).catch(e => {
-          console.warn(`KIS ${ticker} 실패 (${e.message}), Yahoo로 폴백`);
-          return null;
-        });
-        if (data) console.log(`KIS OK: ${ticker} → ${data.price}`);
-      }
-
-      // KIS 실패하거나 해외 종목이면 Yahoo Finance
-      if (!data) {
-        const yahooTicker = toYahooTicker(ticker);
-        data = await fetchYahoo(yahooTicker);
-        if (data) {
-          data.source = isKorean ? 'Yahoo(KR)' : 'Yahoo';
-          console.log(`Yahoo OK: ${ticker}(→${yahooTicker}) → ${data.price}`);
-        } else {
-          console.warn(`❌ ${ticker}: KIS + Yahoo 모두 실패 (Yahoo ticker: ${yahooTicker})`);
+      if (isKorean) {
+        // 국내 주식/ETF → KIS 우선, KIS 실패 시 Yahoo(+.KS) 폴백
+        if (hasKis) {
+          data = await fetchKis(ticker).catch(e => {
+            console.warn(`KIS ${ticker} 실패 (${e.message}), Yahoo로 폴백`);
+            return null;
+          });
+          if (data) console.log(`KIS OK: ${ticker} → ${data.price}`);
         }
+        if (!data) {
+          // KIS 미설정 또는 KIS 실패 → Yahoo에 .KS 붙여서 시도
+          const yahooTicker = toYahooTicker(ticker);
+          data = await fetchYahoo(yahooTicker);
+          if (data) {
+            data.source = 'Yahoo(KR)';
+            console.log(`Yahoo(KR) OK: ${ticker}(→${yahooTicker}) → ${data.price}`);
+          } else {
+            console.warn(`❌ ${ticker}: KIS + Yahoo 모두 실패`);
+          }
+        }
+      } else {
+        // 해외 주식/ETF / 지수 → Yahoo Finance
+        data = await fetchYahoo(ticker);
+        if (data) console.log(`Yahoo OK: ${ticker} → ${data.price}`);
+        else console.warn(`❌ ${ticker}: Yahoo 조회 실패`);
       }
 
       if (data) prices[ticker] = data;
