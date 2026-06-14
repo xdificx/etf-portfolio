@@ -478,14 +478,49 @@ async function fetchAllPrices(silent){
   const h=computeHoldings();
   const tickers=Object.keys(h).filter(t=>h[t].qty>0);
   if(!tickers.length){if(!silent)toast('보유 종목이 없습니다');return}
-  // 30분 캐시: 최근 업데이트가 유효하면 재요청 스킵
-  if(silent&&isCacheValid(S._lastFetch)){
-    updatePriceBar(false);return;
-  }
+  if(silent&&isCacheValid(S._lastFetch)){updatePriceBar(false);return}
   if(!silent)toast('가격 조회 중…');
   updatePriceBar(true);
-  // 캐시가 유효한 개별 종목은 스킵
   const tickersToFetch=silent?tickers.filter(t=>!isCacheValid(S.prices[t]&&S.prices[t].fetchedAt)):tickers;
+  const allTickers=['^KS11','^GSPC',...tickersToFetch];
+
+  try{
+    // Vercel API 호출 (KIS + Yahoo Finance 통합)
+    const url='/api/price?tickers='+allTickers.map(encodeURIComponent).join(',');
+    const res=await fetch(url,{signal:AbortSignal.timeout(15000)});
+    if(!res.ok)throw new Error('API '+res.status);
+    const data=await res.json();
+
+    const rate=await fetchRate();
+    if(rate)S._cachedRate=rate;
+
+    const kospiR=data.prices['^KS11'];
+    const sp500R=data.prices['^GSPC'];
+    let ok=0;const failed=[];
+    for(const t of tickersToFetch){
+      const r=data.prices[t];
+      if(r){S.prices[t]={price:r.price,dayChg:r.dayChg,dayPct:r.dayPct,
+        currency:r.currency,source:r.source||'',fetchedAt:r.fetchedAt||new Date().toISOString()};ok++}
+      else failed.push(t);
+    }
+    addHistorySnapshot(kospiR?kospiR.price:null,sp500R?sp500R.price:null);
+    S._lastFetch=new Date().toISOString();
+    if(!silent){S._manualFetch=S._lastFetch;S._priceSource='manual';}
+    save();renderAll();updatePriceBar(false);
+    if(!silent){
+      if(failed.length)toast('✅ '+ok+'/'+tickersToFetch.length+'개 완료 | ❌ 실패: '+failed.join(', '),4500);
+      else toast('✅ '+ok+'개 종목 업데이트 완료');
+    }
+
+  }catch(e){
+    // Vercel API 불가 시 기존 Yahoo Finance 직접 호출로 폴백
+    console.warn('Vercel API 실패, Yahoo Finance 직접 호출로 폴백:',e.message);
+    await fetchAllPricesFallback(silent,tickersToFetch);
+  }
+}
+
+// 폴백: 기존 Yahoo Finance 프록시 방식
+async function fetchAllPricesFallback(silent,tickersToFetch){
   const allTasks=[fetchRate(),fetchYF('^KS11'),fetchYF('^GSPC'),
     ...tickersToFetch.map(t=>fetchYF(t).then(r=>({ticker:t,r})))];
   const[rate,kospiR,sp500R,...stockR]=await Promise.all(allTasks);
@@ -493,13 +528,13 @@ async function fetchAllPrices(silent){
   let ok=0;
   for(const{ticker,r}of stockR){
     if(r){S.prices[ticker]={price:r.price,dayChg:r.dayChg,dayPct:r.dayPct,
-      currency:r.currency,fetchedAt:new Date().toISOString()};ok++}
+      currency:r.currency,source:'Yahoo(직접)',fetchedAt:new Date().toISOString()};ok++}
   }
   addHistorySnapshot(kospiR?kospiR.price:null,sp500R?sp500R.price:null);
   S._lastFetch=new Date().toISOString();
   if(!silent){S._manualFetch=S._lastFetch;S._priceSource='manual';}
   save();renderAll();updatePriceBar(false);
-  if(!silent)toast('✅ '+ok+'/'+tickersToFetch.length+'개 종목 업데이트 완료');
+  if(!silent)toast('✅ '+ok+'/'+tickersToFetch.length+'개 종목 업데이트 (Yahoo 직접)');
 }
 
 // ════════════════════════════════════════════════════════════════
