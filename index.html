@@ -175,9 +175,21 @@ function fbSubscribe(){
   if(_fbUnsub)_fbUnsub();
   _fbUnsub=ref.onSnapshot(snap=>{
     if(snap.exists){
+      // 로컬 가격 캐시 보존 — Firestore는 거래/입출금 데이터만 동기화
+      const localPrices=S.prices||{};
+      const localLastFetch=S._lastFetch;
+      const localManualFetch=S._manualFetch;
+      const localPriceSource=S._priceSource;
       S=Object.assign(mkState(),snap.data());
+      // Firestore에 prices가 없거나 비어있으면 로컬 캐시 사용
+      if(!S.prices||!Object.keys(S.prices).length){
+        S.prices=localPrices;
+        S._lastFetch=localLastFetch;
+        S._manualFetch=localManualFetch;
+        S._priceSource=localPriceSource;
+      }
       localStorage.setItem(STORAGE_KEY,JSON.stringify(S));
-      renderAll();
+      renderAll();updatePriceBar(false);
     }
   },err=>{toast('⚠️ Firebase 오류: '+err.message)});
 }
