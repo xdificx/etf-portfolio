@@ -307,11 +307,15 @@ const mkState=()=>({
     {id:'samsung',name:'삼성증권 ISA',color:'#6366f1'},
     {id:'toss',  name:'토스증권',     color:'#10b981'},
   ],
-  dividends:[],       // [{id,ticker,name,exDate,payDate,amtPerShare,currency,received}]
+  dividendData:{},    // 자동 조회 데이터 {ticker:{frequency,avgAmount,lastExDate,...}}
+  dividends:[],       // 수동 입력 [{id,ticker,name,exDate,payDate,amtPerShare,currency,received}]
   history:[],         // [{date,totalVal,totalCost,kospi,sp500}]
   prices:{},
   settings:{manualRate:null}
 });
+
+const DIV_FREQ_LABEL={monthly:'월배당',quarterly:'분기배당','semi-annual':'반기배당',annual:'연배당'};
+const DIV_FREQ_MONTHS={monthly:1,quarterly:3,'semi-annual':6,annual:12};
 
 // 계좌별 UI 필터 (저장 안 함, 메모리만)
 let _acctFilter=null; // null=전체, 'samsung'|'toss'|...
@@ -1062,44 +1066,247 @@ function renderCashflows(){
 }
 
 // ════════════════════════════════════════════════════════════════
+// DIVIDEND PROJECTION
+// ════════════════════════════════════════════════════════════════
+function projectNextDividends(data, fromDate){
+  const gapMonths=DIV_FREQ_MONTHS[data.frequency]||3;
+  fromDate=fromDate||new Date();
+  const projections=[];
+  const oneYearLater=new Date(fromDate);
+  oneYearLater.setFullYear(oneYearLater.getFullYear()+1);
+
+  // 미래 예정 배당 (이미 ex-date가 지나지 않은 것 포함)
+  for(const h of(data.history||[])){
+    if(new Date(h.date)>=fromDate)
+      projections.push({exDate:h.date,amount:h.amount,isProjected:false});
+  }
+
+  // 마지막 ex-date 기준으로 미래 프로젝션
+  if(data.lastExDate){
+    let next=new Date(data.lastExDate);
+    next.setMonth(next.getMonth()+gapMonths);
+    while(next<=oneYearLater){
+      const dateStr=next.toISOString().slice(0,10);
+      if(!projections.find(p=>p.exDate===dateStr))
+        projections.push({exDate:dateStr,amount:data.avgAmount||data.lastAmount,isProjected:true});
+      next=new Date(next);
+      next.setMonth(next.getMonth()+gapMonths);
+    }
+  }
+  return projections.sort((a,b)=>a.exDate.localeCompare(b.exDate));
+}
+
+// 보유종목 기반 월별 예상 배당금 계산 (KRW)
+function calcMonthlyDivMap(){
+  const holdings=computeHoldings();
+  const rate=getRate();
+  const map={}; // {'2026-03': total_krw}
+  for(const[ticker,h] of Object.entries(holdings)){
+    if(h.qty<=0)continue;
+    const data=(S.dividendData||{})[ticker];
+    if(!data)continue;
+    const projs=projectNextDividends(data,new Date());
+    for(const p of projs){
+      const ym=p.exDate.slice(0,7);
+      const amtKRW=data.currency==='USD'?p.amount*h.qty*rate:p.amount*h.qty;
+      map[ym]=(map[ym]||0)+amtKRW;
+    }
+  }
+  return map;
+}
+
+async function fetchDividendData(){
+  const holdings=computeHoldings();
+  const tickers=Object.keys(holdings).filter(t=>holdings[t].qty>0);
+  if(!tickers.length){toast('보유 종목이 없습니다');return}
+  toast('배당 데이터 조회 중…');
+  try{
+    const url='/api/dividends?tickers='+tickers.map(encodeURIComponent).join(',');
+    const res=await fetch(url,{signal:AbortSignal.timeout(20000)});
+    if(!res.ok)throw new Error('API '+res.status);
+    const data=await res.json();
+    if(!S.dividendData)S.dividendData={};
+    Object.assign(S.dividendData,data.dividends);
+    save();renderDividends();
+    const ok=data.meta.success,no=data.meta.noData||[];
+    let msg=`✅ ${ok}개 종목 배당 데이터 조회 완료`;
+    if(no.length)msg+=` | 배당 없음: ${no.join(', ')}`;
+    toast(msg,4000);
+  }catch(e){
+    toast('⚠️ 배당 조회 실패: '+e.message);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
 // RENDER — DIVIDENDS
 // ════════════════════════════════════════════════════════════════
 function renderDividends(){
   const today=todayStr();
-  const divs=[...(S.dividends||[])].sort((a,b)=>a.exDate.localeCompare(b.exDate));
-  const upcoming=divs.filter(d=>!d.received&&d.exDate>=today);
-  const received=divs.filter(d=>d.received);
-  const h=computeHoldings();
+  const now=new Date();
+  const holdings=computeHoldings();
+  const rate=getRate();
+  const divData=S.dividendData||{};
+  const hasDivData=Object.keys(divData).length>0;
 
-  let totalIncome=0;
-  for(const d of received)totalIncome+=toKRW((d.amtPerShare||0)*(d.sharesHeld||0),d.currency);
+  // ── 연간 배당 합산 ─────────────────────────────────────────────
+  const monthlyMap=calcMonthlyDivMap();
+  const totalAnnual=Object.values(monthlyMap).reduce((a,b)=>a+b,0);
+  const totalVal=computeStats(holdings,null).totalVal;
+  const divYield=totalVal>0?totalAnnual/totalVal*100:0;
+  const avgMonthly=totalAnnual/12;
 
-  function divRow(d){
-    const total=toKRW((d.amtPerShare||0)*(d.sharesHeld||0),d.currency);
-    return `<tr>
-      <td class="muted">${d.exDate}</td>
-      <td><div style="font-weight:600">${esc(d.ticker)}</div>
-          <div style="font-size:11px;color:var(--muted)">${esc(d.name)}</div></td>
-      <td>${d.sharesHeld||'-'}주</td>
-      <td>${fmtPrice(d.amtPerShare,d.currency)}</td>
-      <td>${fmtKRW(total)}</td>
-      <td class="muted">${d.payDate||'-'}</td>
-      <td>
-        <input type="checkbox" ${d.received?'checked':''} onchange="toggleDiv('${d.id}',this.checked)" style="width:16px;height:16px;cursor:pointer">
-      </td>
-      <td><button class="btn-xs btn-del" onclick="delDiv('${d.id}')">삭제</button></td>
+  // ── 월별 바 차트 데이터 (향후 12개월) ─────────────────────────
+  const months=[];
+  const chartVals=[];
+  for(let i=0;i<12;i++){
+    const d=new Date(now);d.setMonth(d.getMonth()+i);
+    const ym=d.toISOString().slice(0,7);
+    const label=(d.getMonth()+1)+'월';
+    months.push(label);chartVals.push(Math.round(monthlyMap[ym]||0));
+  }
+
+  // ── 종목별 배당 현황 ──────────────────────────────────────────
+  let tickerRows='';
+  for(const[ticker,h] of Object.entries(holdings)){
+    if(h.qty<=0)continue;
+    const data=divData[ticker];
+    if(!data){
+      tickerRows+=`<tr>
+        <td><div style="font-weight:600">${esc(ticker)}</div>
+            <div style="font-size:11px;color:var(--muted)">${esc(h.name)}</div></td>
+        <td class="muted" colspan="4" style="font-size:12px">데이터 없음 — 자동조회 후 확인</td>
+      </tr>`;
+      continue;
+    }
+    const annualPerShare=data.avgAmount*(12/DIV_FREQ_MONTHS[data.frequency]);
+    const annualKRW=data.currency==='USD'?annualPerShare*h.qty*rate:annualPerShare*h.qty;
+    const nextProjs=projectNextDividends(data,now).slice(0,1);
+    const nextEx=nextProjs[0]?nextProjs[0].exDate:'-';
+    tickerRows+=`<tr>
+      <td><div style="font-weight:600">${esc(ticker)}</div>
+          <div style="font-size:11px;color:var(--muted)">${esc(h.name)}</div></td>
+      <td><span style="background:rgba(99,102,241,.15);color:var(--accent);padding:2px 7px;border-radius:10px;font-size:11px">${DIV_FREQ_LABEL[data.frequency]||data.frequency}</span></td>
+      <td>${data.currency==='USD'?fmtUSD(data.avgAmount):fmtKRW(data.avgAmount)}</td>
+      <td class="muted">${nextEx}</td>
+      <td class="pos">${fmtKRW(annualKRW)}</td>
     </tr>`;
   }
 
+  // ── 월별 달력 ──────────────────────────────────────────────────
+  let calHTML='';
+  const calMonths=[];
+  for(let i=0;i<12;i++){
+    const d=new Date(now);d.setMonth(d.getMonth()+i);
+    calMonths.push(d.toISOString().slice(0,7));
+  }
+
+  // 자동 조회 배당 프로젝션
+  const allProj=[];
+  for(const[ticker,h] of Object.entries(holdings)){
+    if(h.qty<=0)continue;
+    const data=divData[ticker];if(!data)continue;
+    for(const p of projectNextDividends(data,now)){
+      const amtKRW=data.currency==='USD'?p.amount*h.qty*rate:p.amount*h.qty;
+      allProj.push({ym:p.exDate.slice(0,7),exDate:p.exDate,ticker,name:h.name,
+        amtKRW,isProjected:p.isProjected,currency:data.currency});
+    }
+  }
+  // 수동 입력 배당 (미수령)
+  for(const d of(S.dividends||[])){
+    if(d.received)continue;
+    const ym=d.exDate.slice(0,7);
+    const amtKRW=toKRW((d.amtPerShare||0)*(d.sharesHeld||0),d.currency);
+    allProj.push({ym,exDate:d.exDate,ticker:d.ticker,name:d.name,amtKRW,isProjected:false,isManual:true});
+  }
+  allProj.sort((a,b)=>a.exDate.localeCompare(b.exDate));
+
+  for(const ym of calMonths){
+    const items=allProj.filter(p=>p.ym===ym);
+    const monthTotal=items.reduce((a,b)=>a+b.amtKRW,0);
+    const [yr,mo]=ym.split('-');
+    calHTML+=`<div class="card" style="margin-bottom:10px">
+      <div class="row-between" style="margin-bottom:8px">
+        <div style="font-size:14px;font-weight:600">${parseInt(mo)}월 <span class="muted" style="font-size:12px">${yr}</span></div>
+        <div class="pos" style="font-size:13px;font-weight:600">${monthTotal>0?fmtKRW(monthTotal):'—'}</div>
+      </div>`;
+    if(!items.length){
+      calHTML+=`<div style="font-size:12px;color:var(--muted)">배당 없음</div>`;
+    } else {
+      for(const it of items){
+        calHTML+=`<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px">
+          <div>
+            <span style="font-weight:600">${esc(it.ticker)}</span>
+            <span class="muted" style="margin-left:6px">${it.exDate}</span>
+            ${it.isProjected?'<span style="font-size:10px;color:var(--muted);margin-left:4px">(예상)</span>':''}
+            ${it.isManual?'<span style="font-size:10px;color:var(--yellow);margin-left:4px">(수동)</span>':''}
+          </div>
+          <div class="pos">${fmtKRW(it.amtKRW)}</div>
+        </div>`;
+      }
+    }
+    calHTML+='</div>';
+  }
+
+  // ── 수동 배당 기록 ─────────────────────────────────────────────
+  const received=(S.dividends||[]).filter(d=>d.received);
+  let totalIncome=0;
+  for(const d of received)totalIncome+=toKRW((d.amtPerShare||0)*(d.sharesHeld||0),d.currency);
+
   document.getElementById('tab-dividends').innerHTML=`
+    <div class="row-between" style="margin-bottom:12px">
+      <div class="sec-title" style="margin:0">배당 캘린더</div>
+      <button class="btn btn-primary" onclick="fetchDividendData()" style="font-size:12px;padding:7px 14px">
+        🔄 배당 자동 조회
+      </button>
+    </div>
+
+    ${!hasDivData?`<div class="card" style="text-align:center;padding:32px">
+      <div style="font-size:14px;margin-bottom:8px">배당 데이터가 없습니다</div>
+      <div class="muted" style="font-size:12px;margin-bottom:16px">상단의 "배당 자동 조회" 버튼을 눌러주세요<br>미국 ETF/주식은 자동, 국내 ETF는 수동 입력을 활용하세요</div>
+    </div>`:`
     <div class="grid3">
-      <div class="card"><div class="card-title">예정 배당 건수</div><div class="card-val">${upcoming.length}건</div></div>
-      <div class="card"><div class="card-title">수령 완료 건수</div><div class="card-val">${received.length}건</div></div>
-      <div class="card"><div class="card-title">총 배당 수입</div><div class="card-val pos">${fmtKRW(totalIncome)}</div></div>
+      <div class="card">
+        <div class="card-title">예상 연간 배당 수입</div>
+        <div class="card-val pos">${fmtKRW(totalAnnual)}</div>
+        <div class="card-sub">수령 완료 ${fmtKRW(totalIncome)}</div>
+      </div>
+      <div class="card">
+        <div class="card-title">월평균 배당 수입</div>
+        <div class="card-val">${fmtKRW(avgMonthly)}</div>
+      </div>
+      <div class="card">
+        <div class="card-title">배당 수익률</div>
+        <div class="card-val ${cls(divYield)}">${fmtPct(divYield)}</div>
+        <div class="card-sub">총 자산 대비</div>
+      </div>
     </div>
 
     <div class="card">
-      <div class="sec-title">배당 추가</div>
+      <div class="sec-title" style="margin-bottom:10px">📊 월별 예상 배당금 (향후 12개월)</div>
+      <div class="chart-wrap"><canvas id="divBarChart"></canvas></div>
+    </div>
+
+    <div class="grid2">
+      <div>
+        <div class="sec-title" style="margin-bottom:10px">📅 월별 배당 달력</div>
+        ${calHTML}
+      </div>
+      <div>
+        <div class="sec-title" style="margin-bottom:10px">종목별 배당 현황</div>
+        <div class="card">
+          <div class="tbl-wrap"><table class="tbl">
+            <thead><tr><th>종목</th><th>주기</th><th>주당배당금</th><th>다음 예정</th><th>연간 예상</th></tr></thead>
+            <tbody>${tickerRows||'<tr><td colspan="5" class="muted" style="text-align:center;padding:20px">자동 조회 후 표시됩니다</td></tr>'}</tbody>
+          </table></div>
+        </div>
+      </div>
+    </div>`}
+
+    <div class="card">
+      <div class="row-between" style="margin-bottom:10px">
+        <div class="sec-title" style="margin:0">✏️ 수동 배당 입력</div>
+        <span class="muted" style="font-size:11px">국내 ETF / 자동조회 안 되는 종목</span>
+      </div>
       <div class="form-row">
         <div class="fg"><label>티커</label><input type="text" id="div-ticker" placeholder="005930.KS" oninput="this.value=this.value.toUpperCase();prefillDivShares()"></div>
         <div class="fg"><label>종목명</label><input type="text" id="div-name" placeholder="삼성전자"></div>
@@ -1109,26 +1316,37 @@ function renderDividends(){
       <div class="form-row">
         <div class="fg"><label>주당 배당금</label><input type="number" id="div-amt" placeholder="1000" step="any"></div>
         <div class="fg fg-sm"><label>통화</label><select id="div-cur"><option value="KRW">KRW</option><option value="USD">USD</option></select></div>
-        <div class="fg"><label>보유 수량 (자동입력)</label><input type="number" id="div-shares" placeholder="100" step="any"></div>
+        <div class="fg"><label>보유 수량</label><input type="number" id="div-shares" placeholder="100" step="any"></div>
         <div class="fg" style="flex:0 0 auto"><label>&nbsp;</label><button class="btn btn-primary" onclick="addDiv()">추가</button></div>
       </div>
-    </div>
-
-    ${upcoming.length?`<div class="card">
-      <div class="sec-title">📅 예정 배당</div>
-      <div class="tbl-wrap"><table class="tbl">
-        <thead><tr><th>배당락일</th><th>종목</th><th>보유주</th><th>주당배당금</th><th>예상 수입</th><th>지급일</th><th>수령</th><th></th></tr></thead>
-        <tbody>${upcoming.map(divRow).join('')}</tbody>
-      </table></div></div>`:''}
-
-    <div class="card">
-      <div class="sec-title">✅ 수령 완료 (${received.length}건)</div>
-      ${!received.length?'<div class="empty">수령 완료된 배당이 없습니다</div>':`
-      <div class="tbl-wrap"><table class="tbl">
-        <thead><tr><th>배당락일</th><th>종목</th><th>보유주</th><th>주당배당금</th><th>수입</th><th>지급일</th><th>수령</th><th></th></tr></thead>
-        <tbody>${received.map(divRow).join('')}</tbody>
-      </table></div>`}
+      ${received.length?`<div class="muted" style="font-size:12px;margin-top:8px">수령 완료 ${received.length}건 | 총 ${fmtKRW(totalIncome)}</div>`:''}
     </div>`;
+
+  // 바 차트 렌더
+  if(hasDivData){
+    killChart('divBar');
+    _charts['divBar']=new Chart(document.getElementById('divBarChart'),{
+      type:'bar',
+      data:{labels:months,datasets:[{
+        label:'예상 배당금',
+        data:chartVals,
+        backgroundColor:'rgba(16,185,129,.7)',
+        borderRadius:5,
+      }]},
+      options:{
+        responsive:true,maintainAspectRatio:false,
+        plugins:{
+          legend:{display:false},
+          tooltip:{callbacks:{label:c=>'₩'+c.parsed.y.toLocaleString('ko-KR')}}
+        },
+        scales:{
+          x:{ticks:{color:'#e2e8f0'},grid:{display:false}},
+          y:{ticks:{color:'#e2e8f0',callback:v=>v>=10000?'₩'+(v/10000).toFixed(0)+'만':'₩'+v.toLocaleString()},
+             grid:{color:'rgba(255,255,255,.05)'}}
+        }
+      }
+    });
+  }
 }
 
 // ════════════════════════════════════════════════════════════════
