@@ -64,22 +64,36 @@ const NAVER_HEADERS = {
   'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
 };
 
-// EUC-KR로 인코딩된 HTML을 올바르게 읽기
+// 네이버 HTML을 올바른 인코딩으로 읽기
+// Content-Type charset을 우선 확인하고, 없으면 HTML meta charset 확인
 async function fetchKrHtml(url) {
   const res = await fetch(url, {
     headers: NAVER_HEADERS,
     signal: AbortSignal.timeout(10000),
   });
-  if (!res.ok) return { ok: false, status: res.status, html: null };
-  // 네이버 Finance HTML은 EUC-KR(CP949) 인코딩 — TextDecoder로 변환
+  if (!res.ok) return { ok: false, status: res.status, html: null, encoding: null };
+
+  const contentType = res.headers.get('content-type') || '';
   const buf = await res.arrayBuffer();
+
+  // 1) Content-Type 헤더에서 charset 확인
+  let encoding = 'utf-8';
+  if (/euc-kr|euckr|cp949/i.test(contentType)) {
+    encoding = 'euc-kr';
+  } else if (/utf-8/i.test(contentType)) {
+    encoding = 'utf-8';
+  } else {
+    // 2) 헤더에 charset 없으면 HTML 앞부분에서 meta charset 탐지
+    const preview = new TextDecoder('ascii', { fatal: false }).decode(buf.slice(0, 1024));
+    if (/euc-kr|euckr|cp949/i.test(preview)) encoding = 'euc-kr';
+  }
+
   try {
-    const html = new TextDecoder('euc-kr').decode(buf);
-    return { ok: true, status: res.status, html };
+    const html = new TextDecoder(encoding, { fatal: false }).decode(buf);
+    return { ok: true, status: res.status, html, encoding, contentType };
   } catch {
-    // TextDecoder가 euc-kr 미지원 환경(드물지만) → UTF-8 폴백
-    const html = new TextDecoder('utf-8').decode(buf);
-    return { ok: true, status: res.status, html };
+    const html = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+    return { ok: true, status: res.status, html, encoding: 'utf-8-fallback', contentType };
   }
 }
 
@@ -135,8 +149,8 @@ async function fetchNaverEtfHtml(code, dbg) {
 
   for (const url of candidates) {
     try {
-      const { ok, status, html } = await fetchKrHtml(url);
-      dbg.push({ step: 'naver_etf_html_try', url, status, htmlLen: html?.length ?? 0 });
+      const { ok, status, html, encoding, contentType } = await fetchKrHtml(url);
+      dbg.push({ step: 'naver_etf_html_try', url, status, htmlLen: html?.length ?? 0, encoding, contentType });
       if (!ok || !html) continue;
 
       // iframe URL 탐지
@@ -191,55 +205,83 @@ async function fetchNaverEtfHtml(code, dbg) {
   return null;
 }
 
-// ── ③ 네이버 배당/분배금 HTML 스크래핑 ──────────────────────────────────
+// ── ③ 네이버 ETF 분배금 전용 URL 시도 ───────────────────────────────────
 async function fetchNaverStockHtml(code, dbg) {
-  const url = `https://finance.naver.com/item/coinfo.naver?code=${code}&target=divpay`;
-  try {
-    const { ok, status, html } = await fetchKrHtml(url);
-    dbg.push({ step: 'naver_stock_html', url, status, htmlLen: html?.length ?? 0 });
-    if (!ok || !html) return null;
+  // ETF 분배금은 target=etf_dvpay 또는 target=divpay
+  const candidates = [
+    `https://finance.naver.com/item/coinfo.naver?code=${code}&target=etf_dvpay`,
+    `https://finance.naver.com/item/coinfo.naver?code=${code}&target=divpay`,
+  ];
 
-    // 디버그: 날짜 패턴 주변 HTML 샘플 확인
-    const dateMatch = html.match(/\d{4}\.\d{2}\.\d{2}/);
-    if (dateMatch) {
-      const idx = html.indexOf(dateMatch[0]);
-      dbg.push({ step: 'naver_stock_html_sample', near_date: html.slice(Math.max(0,idx-100), idx+300) });
-    } else {
-      // 날짜가 없으면 테이블 구조 확인
-      const tblMatch = html.match(/<table[\s\S]{0,2000}/);
-      dbg.push({ step: 'naver_stock_html_notable', sample: tblMatch?.[0]?.slice(0,400) ?? '테이블 없음' });
-    }
+  for (const url of candidates) {
+    try {
+      const { ok, status, html, encoding, contentType } = await fetchKrHtml(url);
+      dbg.push({ step: 'naver_coinfo_try', url, status, htmlLen: html?.length ?? 0, encoding, contentType });
+      if (!ok || !html) continue;
 
-    const history = [];
+      // iframe 탐지 (분배금 테이블이 iframe으로 로드될 수 있음)
+      const iframes = [...html.matchAll(/<iframe[^>]+src=["']([^"']+)["']/gi)].map(m => m[1]);
+      if (iframes.length) dbg.push({ step: 'coinfo_iframes', url, iframes });
 
-    // 패턴 A: 날짜 바로 뒤 <tr> 안의 숫자들 (현금/분배금 구분 없이)
-    // 분배금은 "현금" 없이 날짜 + 금액만 있을 수 있음
-    const trRe = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
-    let tr;
-    while ((tr = trRe.exec(html)) !== null) {
-      const cells = [...tr[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)]
-        .map(c => c[1].replace(/<[^>]+>/g, '').trim());
-      // 첫 번째 셀이 날짜 형식인 행 탐색
-      if (cells.length >= 2 && /^\d{4}\.\d{2}\.\d{2}$/.test(cells[0])) {
-        const date = cells[0].replace(/\./g, '-');
-        // 숫자 셀 찾기 (두 번째 이후 셀 중 순수 숫자+콤마)
-        for (let i = 1; i < cells.length; i++) {
-          const raw = cells[i].replace(/,/g, '');
-          const amount = parseFloat(raw);
-          if (!isNaN(amount) && amount > 0 && amount < 1_000_000) {
-            history.push({ date, amount });
-            break;
+      // 키워드 탐지
+      for (const kw of ['분배기준일', '분배금', '배당기준일', 'dvpay', 'divpay']) {
+        const idx = html.indexOf(kw);
+        if (idx >= 0) {
+          dbg.push({ step: `coinfo_keyword_${kw}`, ctx: html.slice(Math.max(0,idx-80), idx+500) });
+        }
+      }
+
+      // td 날짜 기반 파싱
+      const history = [];
+      const trRe = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+      let tr;
+      while ((tr = trRe.exec(html)) !== null) {
+        const cells = [...tr[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)]
+          .map(c => c[1].replace(/<[^>]+>/g, '').trim());
+        if (cells.length >= 2 && /^\d{4}\.\d{2}\.\d{2}$/.test(cells[0])) {
+          const date = cells[0].replace(/\./g, '-');
+          for (let i = 1; i < cells.length; i++) {
+            const amount = parseFloat(cells[i].replace(/,/g, ''));
+            if (!isNaN(amount) && amount > 0 && amount < 1_000_000) {
+              history.push({ date, amount });
+              break;
+            }
           }
         }
       }
-    }
 
-    dbg.push({ step: 'naver_stock_html_rows', count: history.length, sample: history.slice(0,3) });
-    return history.length ? buildResult(code, history, 'KRW') : null;
-  } catch (e) {
-    dbg.push({ step: 'naver_stock_html_error', error: e.message });
-    return null;
+      // iframe에서 분배금 직접 조회
+      for (const iframeSrc of iframes) {
+        const fullUrl = iframeSrc.startsWith('http') ? iframeSrc : `https://finance.naver.com${iframeSrc}`;
+        const { ok: iok, html: ihtml, encoding: ienc } = await fetchKrHtml(fullUrl);
+        dbg.push({ step: 'coinfo_iframe_fetch', src: fullUrl, ok: iok, len: ihtml?.length ?? 0, encoding: ienc });
+        if (!iok || !ihtml) continue;
+
+        const iRe = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+        let itr;
+        while ((itr = iRe.exec(ihtml)) !== null) {
+          const cells = [...itr[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)]
+            .map(c => c[1].replace(/<[^>]+>/g, '').trim());
+          if (cells.length >= 2 && /^\d{4}\.\d{2}\.\d{2}$/.test(cells[0])) {
+            const date = cells[0].replace(/\./g, '-');
+            for (let i = 1; i < cells.length; i++) {
+              const amount = parseFloat(cells[i].replace(/,/g, ''));
+              if (!isNaN(amount) && amount > 0 && amount < 1_000_000) {
+                history.push({ date, amount });
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      dbg.push({ step: 'naver_coinfo_rows', url, count: history.length, sample: history.slice(0,3) });
+      if (history.length) return buildResult(code, history, 'KRW');
+    } catch (e) {
+      dbg.push({ step: 'naver_coinfo_error', url, error: e.message });
+    }
   }
+  return null;
 }
 
 // ── 국내 배당 메인 ────────────────────────────────────────────────────────
