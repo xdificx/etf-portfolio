@@ -97,7 +97,105 @@ async function fetchKrHtml(url) {
   }
 }
 
-// ── ① 네이버 ETF 분배금 JSON API (여러 URL 패턴 시도) ───────────────────
+// ── ① WiseReport 직접 AJAX API 시도 ─────────────────────────────────────
+// navercomp.wisereport.co.kr 가 내부적으로 호출하는 실제 데이터 URL들
+async function fetchWiseReport(code, dbg) {
+  // WiseReport ASP.NET AJAX 패턴: index.aspx가 호출하는 하위 aspx 직접 요청
+  const today = new Date().toISOString().slice(0,10).replace(/-/g,'');
+  const twoYearsAgo = new Date(Date.now() - 2*365*24*3600*1000).toISOString().slice(0,10).replace(/-/g,'');
+
+  const candidates = [
+    // 분배금 직접 URL 패턴들
+    `https://navercomp.wisereport.co.kr/v2/ETF/etf_dvpay.aspx?cmp_cd=${code}`,
+    `https://navercomp.wisereport.co.kr/v2/ETF/etf_dvpay.aspx?cmp_cd=${code}&start_dt=${twoYearsAgo}&end_dt=${today}`,
+    `https://navercomp.wisereport.co.kr/v2/ETF/GetDvPayData.aspx?cmp_cd=${code}`,
+    `https://navercomp.wisereport.co.kr/v2/ETF/etf_dvpay_data.aspx?cmp_cd=${code}`,
+  ];
+
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url, {
+        headers: {
+          ...NAVER_HEADERS,
+          'Referer': `https://navercomp.wisereport.co.kr/v2/ETF/index.aspx?cmp_cd=${code}&target=etf_dvpay`,
+          'Host': 'navercomp.wisereport.co.kr',
+        },
+        signal: AbortSignal.timeout(6000),
+      });
+      dbg.push({ step: 'wisereport_try', url, status: res.status });
+      if (!res.ok) continue;
+
+      const text = await res.text();
+      dbg.push({ step: 'wisereport_got', url, len: text.length, sample: text.slice(0, 300) });
+
+      // JSON 응답인 경우
+      try {
+        const json = JSON.parse(text);
+        const list = json?.result ?? json?.data ?? json?.list ?? json?.rows ?? [];
+        if (Array.isArray(list) && list.length) {
+          dbg.push({ step: 'wisereport_json', count: list.length, first: list[0] });
+          const history = [];
+          for (const item of list) {
+            const rawDate = Object.values(item).find(v => /\d{8}/.test(String(v))) ?? '';
+            const date = String(rawDate).replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+            const amount = parseFloat(String(Object.values(item).find(v => /^\d+$/.test(String(v)) && Number(v) < 1_000_000 && Number(v) > 0) ?? 0));
+            if (/^\d{4}-\d{2}-\d{2}$/.test(date) && amount > 0) history.push({ date, amount });
+          }
+          if (history.length) return buildResult(code, history, 'KRW');
+        }
+      } catch {}
+
+      // HTML 응답인 경우 — td 파싱
+      const history = [];
+      const trRe = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+      let tr;
+      while ((tr = trRe.exec(text)) !== null) {
+        const cells = [...tr[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)]
+          .map(c => c[1].replace(/<[^>]+>/g, '').replace(/&nbsp;/g,'').trim());
+        if (!cells.length) continue;
+        const m = cells[0].match(/(\d{4})[.\-]?(\d{2})[.\-]?(\d{2})/);
+        if (m) {
+          const date = `${m[1]}-${m[2]}-${m[3]}`;
+          for (let i = 1; i < cells.length; i++) {
+            const amount = parseFloat(cells[i].replace(/,/g,''));
+            if (!isNaN(amount) && amount > 0 && amount < 1_000_000) {
+              history.push({ date, amount }); break;
+            }
+          }
+        }
+      }
+      if (history.length) {
+        dbg.push({ step: 'wisereport_html_ok', count: history.length });
+        return buildResult(code, history, 'KRW');
+      }
+    } catch (e) {
+      dbg.push({ step: 'wisereport_error', url, error: e.message });
+    }
+  }
+
+  // WiseReport JS 파일에서 실제 AJAX URL 추출 시도
+  try {
+    const jsRes = await fetch(`https://navercomp.wisereport.co.kr/v2/ETF/index.aspx?cmp_cd=${code}&target=etf_dvpay`, {
+      headers: NAVER_HEADERS, signal: AbortSignal.timeout(8000),
+    });
+    if (jsRes.ok) {
+      const html = await jsRes.text();
+      // script src 추출
+      const scripts = [...html.matchAll(/<script[^>]+src="([^"]+\.js[^"]*)"/gi)].map(m=>m[1]);
+      dbg.push({ step: 'wisereport_scripts', scripts });
+      // 인라인 JS에서 dvpay 관련 URL 패턴 찾기
+      const ajaxUrls = [...html.matchAll(/url\s*:\s*["']([^"']*dvpay[^"']*)["']/gi)].map(m=>m[1]);
+      const ajaxUrls2 = [...html.matchAll(/["']([^"']*etf_dv[^"']*)["']/gi)].map(m=>m[1]);
+      dbg.push({ step: 'wisereport_ajax_urls', ajaxUrls: [...ajaxUrls, ...ajaxUrls2].slice(0,10) });
+    }
+  } catch (e) {
+    dbg.push({ step: 'wisereport_js_error', error: e.message });
+  }
+
+  return null;
+}
+
+// ── ② 네이버 ETF 분배금 JSON API (여러 URL 패턴 시도) ───────────────────
 async function fetchNaverEtfJson(code, dbg) {
   const candidates = [
     `https://api.stock.naver.com/api/item/etf/${code}/distribution?page=1&pageSize=24`,
@@ -317,12 +415,19 @@ async function fetchNaverStockHtml(code, dbg) {
 async function fetchKoreanDividend(ticker, dbg) {
   const code = getKrCode(ticker);
 
-  let result = await fetchNaverEtfJson(code, dbg);
+  // 0) WiseReport 직접 AJAX API (가장 정확한 소스)
+  let result = await fetchWiseReport(code, dbg);
+  if (result) { result.source = 'wisereport'; return result; }
+
+  // 1) 네이버 ETF JSON API
+  result = await fetchNaverEtfJson(code, dbg);
   if (result) { result.source = 'naver_json'; return result; }
 
+  // 2) 네이버 ETF HTML
   result = await fetchNaverEtfHtml(code, dbg);
   if (result) { result.source = 'naver_etf_html'; return result; }
 
+  // 3) 네이버 coinfo HTML
   result = await fetchNaverStockHtml(code, dbg);
   if (result) { result.source = 'naver_stock_html'; return result; }
 
