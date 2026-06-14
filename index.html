@@ -611,7 +611,7 @@ function renderDashboard(){
     <div class="grid2">
       <div class="card">
         <div class="card-title" style="margin-bottom:8px">자산 배분</div>
-        ${active.length?'<div class="chart-wrap"><canvas id="allocChart"></canvas></div>':'<div class="empty">보유 종목 없음</div>'}
+        ${active.length?'<div class="chart-wrap" style="height:260px"><canvas id="allocChart"></canvas></div>':'<div class="empty">보유 종목 없음</div>'}
       </div>
       <div class="card">
         <div class="card-title" style="margin-bottom:8px">보유 종목</div>
@@ -685,9 +685,9 @@ function renderDashboard(){
       data:{labels:catLabels,datasets:[{data:catVals,backgroundColor:catColors,borderWidth:2,borderColor:'#1a1d2e'}]},
       options:{responsive:true,maintainAspectRatio:false,
         plugins:{
-          legend:{position:'right',labels:{color:'#e2e8f0',font:{size:12},boxWidth:14,
+          legend:{position:'bottom',labels:{color:'#e2e8f0',font:{size:11},boxWidth:12,padding:16,
             generateLabels:chart=>chart.data.labels.map((l,i)=>({
-              text:`${l}  ${(catVals[i]/total*100).toFixed(1)}%`,
+              text:`${l}   ${(catVals[i]/total*100).toFixed(1)}%  (${fmtKRW(catVals[i])})`,
               fillStyle:catColors[i],strokeStyle:catColors[i],
               fontColor:'#e2e8f0',color:'#e2e8f0',hidden:false,index:i
             }))}},
