@@ -123,7 +123,7 @@ async function fetchNaverEtfJson(code, dbg) {
 
 // ── ② 네이버 ETF 페이지 HTML 스크래핑 ───────────────────────────────────
 async function fetchNaverEtfHtml(code, dbg) {
-  const url = `https://finance.naver.com/fund/etfItemInfo.naver?itemCode=${code}`;
+  const url = `https://finance.naver.com/fund/etfItemDetail.naver?itemCode=${code}`;
   try {
     const { ok, status, html } = await fetchKrHtml(url);
     dbg.push({ step: 'naver_etf_html', url, status, htmlLen: html?.length ?? 0 });
@@ -161,7 +161,7 @@ async function fetchNaverEtfHtml(code, dbg) {
   }
 }
 
-// ── ③ 네이버 주식 배당 HTML 스크래핑 ────────────────────────────────────
+// ── ③ 네이버 배당/분배금 HTML 스크래핑 ──────────────────────────────────
 async function fetchNaverStockHtml(code, dbg) {
   const url = `https://finance.naver.com/item/coinfo.naver?code=${code}&target=divpay`;
   try {
@@ -169,24 +169,42 @@ async function fetchNaverStockHtml(code, dbg) {
     dbg.push({ step: 'naver_stock_html', url, status, htmlLen: html?.length ?? 0 });
     if (!ok || !html) return null;
 
-    const history = [];
-    const re = /(\d{4}\.\d{2}\.\d{2})<\/td>[\s\S]*?현금[\s\S]*?<td[^>]*>\s*([\d,]+)\s*<\/td>/g;
-    let m;
-    while ((m = re.exec(html)) !== null) {
-      const date   = m[1].replace(/\./g, '-');
-      const amount = parseFloat(m[2].replace(/,/g, ''));
-      if (amount > 0) history.push({ date, amount });
+    // 디버그: 날짜 패턴 주변 HTML 샘플 확인
+    const dateMatch = html.match(/\d{4}\.\d{2}\.\d{2}/);
+    if (dateMatch) {
+      const idx = html.indexOf(dateMatch[0]);
+      dbg.push({ step: 'naver_stock_html_sample', near_date: html.slice(Math.max(0,idx-100), idx+300) });
+    } else {
+      // 날짜가 없으면 테이블 구조 확인
+      const tblMatch = html.match(/<table[\s\S]{0,2000}/);
+      dbg.push({ step: 'naver_stock_html_notable', sample: tblMatch?.[0]?.slice(0,400) ?? '테이블 없음' });
     }
-    if (!history.length) {
-      const altRe = /(\d{4})\.(\d{2})\.(\d{2})<\/td>[\s\S]*?<td[^>]*>\s*([\d,]+)\s*원?<\/td>/g;
-      let m2;
-      while ((m2 = altRe.exec(html)) !== null) {
-        const date   = `${m2[1]}-${m2[2]}-${m2[3]}`;
-        const amount = parseFloat(m2[4].replace(/,/g, ''));
-        if (amount > 0 && amount < 1_000_000) history.push({ date, amount });
+
+    const history = [];
+
+    // 패턴 A: 날짜 바로 뒤 <tr> 안의 숫자들 (현금/분배금 구분 없이)
+    // 분배금은 "현금" 없이 날짜 + 금액만 있을 수 있음
+    const trRe = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+    let tr;
+    while ((tr = trRe.exec(html)) !== null) {
+      const cells = [...tr[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)]
+        .map(c => c[1].replace(/<[^>]+>/g, '').trim());
+      // 첫 번째 셀이 날짜 형식인 행 탐색
+      if (cells.length >= 2 && /^\d{4}\.\d{2}\.\d{2}$/.test(cells[0])) {
+        const date = cells[0].replace(/\./g, '-');
+        // 숫자 셀 찾기 (두 번째 이후 셀 중 순수 숫자+콤마)
+        for (let i = 1; i < cells.length; i++) {
+          const raw = cells[i].replace(/,/g, '');
+          const amount = parseFloat(raw);
+          if (!isNaN(amount) && amount > 0 && amount < 1_000_000) {
+            history.push({ date, amount });
+            break;
+          }
+        }
       }
     }
-    dbg.push({ step: 'naver_stock_html_rows', count: history.length });
+
+    dbg.push({ step: 'naver_stock_html_rows', count: history.length, sample: history.slice(0,3) });
     return history.length ? buildResult(code, history, 'KRW') : null;
   } catch (e) {
     dbg.push({ step: 'naver_stock_html_error', error: e.message });
