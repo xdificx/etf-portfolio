@@ -112,15 +112,17 @@ async function fetchYahoo(ticker) {
 }
 
 // ── 한국 개별 주식/ETF 여부 판별 ─────────────────────────────────
-// 지수(^KS11, ^KQ11)는 Yahoo Finance 사용 — KIS 지수 API는 별도 tr_id 필요
+// .KS/.KQ/.KP 접미사 또는 KRX 코드 형식(숫자로 시작하는 6자리 알파뉴메릭)
+// 예: 005930, 069500, 0177N0, 0183J0
+// 지수(^KS11)는 Yahoo 사용 — KIS 지수 API는 별도 tr_id 필요
 function isKoreanStock(ticker) {
-  return /\.(KS|KQ|KP)$/i.test(ticker) || /^\d{6}$/.test(ticker);
+  return /\.(KS|KQ|KP)$/i.test(ticker) || /^\d[A-Z0-9]{5}$/i.test(ticker);
 }
 
 // ── Yahoo Finance 한국 티커 변환 ──────────────────────────────────
-// 6자리 숫자만 있으면 .KS 붙여서 Yahoo에 전달
+// KRX 코드(숫자로 시작하는 6자리)면 .KS 붙여서 Yahoo에 전달
 function toYahooTicker(ticker) {
-  if (/^\d{6}$/.test(ticker)) return ticker + '.KS';
+  if (/^\d[A-Z0-9]{5}$/i.test(ticker)) return ticker + '.KS';
   return ticker;
 }
 
