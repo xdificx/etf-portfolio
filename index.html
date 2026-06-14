@@ -182,10 +182,39 @@ function fbSubscribe(){
   },err=>{toast('⚠️ Firebase 오류: '+err.message)});
 }
 
+// ════════════════════════════════════════════════════════════════
+// SERVER PRICES (GitHub Pages prices.json)
+// ════════════════════════════════════════════════════════════════
+async function fetchServerPrices(){
+  try{
+    const r=await fetch('./prices.json?t='+Date.now(),{signal:AbortSignal.timeout(5000)});
+    if(!r.ok)return null;
+    const d=await r.json();
+    if(!d.updatedAt||!d.prices)return null;
+    return d;
+  }catch(e){return null}
+}
+
+async function loadServerPrices(){
+  const server=await fetchServerPrices();
+  if(!server)return;
+  const serverTime=new Date(server.updatedAt).getTime();
+  const localTime=S._lastFetch?new Date(S._lastFetch).getTime():0;
+  const manualTime=S._manualFetch?new Date(S._manualFetch).getTime():0;
+  // 수동 업데이트가 더 최신이면 서버 데이터 무시
+  if(manualTime>serverTime)return;
+  if(serverTime>localTime){
+    S.prices=Object.assign({},server.prices);
+    S._lastFetch=server.updatedAt;
+    S._priceSource='server';
+    save(false);renderAll();updatePriceBar(false);
+  }
+}
+
 async function fbSave(){
   const ref=fbRef();if(!ref)return;
   const data=JSON.parse(JSON.stringify(S));
-  delete data._cachedRate;delete data._lastFetch;delete data.prices;
+  delete data._cachedRate;delete data._priceSource;
   try{await ref.set(data,{merge:true})}catch(e){console.error('fbSave:',e)}
 }
 
@@ -420,7 +449,8 @@ function updatePriceBar(loading){
   if(loading){spin.style.display='';return}
   spin.style.display='none';
   const t=S._lastFetch;
-  bar.textContent=t?('마지막 업데이트: '+fmtRelTime(t)+' ('+new Date(t).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})+')'):'가격 정보 없음 — 가격 업데이트 버튼을 눌러주세요';
+  const src=S._priceSource==='server'?'📡 서버 종가':S._priceSource==='manual'?'🔄 수동 업데이트':'';
+  bar.textContent=t?(src+' 마지막 업데이트: '+fmtRelTime(t)+' ('+new Date(t).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})+')'):'가격 정보 없음 — 가격 업데이트 버튼을 눌러주세요';
 }
 
 const CACHE_MINUTES=30;
@@ -452,6 +482,7 @@ async function fetchAllPrices(silent){
   }
   addHistorySnapshot(kospiR?kospiR.price:null,sp500R?sp500R.price:null);
   S._lastFetch=new Date().toISOString();
+  if(!silent){S._manualFetch=S._lastFetch;S._priceSource='manual';}
   save();renderAll();updatePriceBar(false);
   if(!silent)toast('✅ '+ok+'/'+tickersToFetch.length+'개 종목 업데이트 완료');
 }
@@ -1198,9 +1229,10 @@ load();
 updateAuthBar();
 initFirebase();
 renderDashboard();
-// 캐시된 데이터 먼저 표시 후 백그라운드에서 가격 갱신
+// 1) 캐시된 데이터 즉시 표시
 updatePriceBar(false);
-setTimeout(()=>fetchAllPrices(true),500);
+// 2) 서버 prices.json 로드 (GitHub Actions가 매일 18:00 KST에 업데이트)
+setTimeout(()=>loadServerPrices(),500);
 // 1분마다 "몇 분 전" 텍스트 갱신
 setInterval(()=>updatePriceBar(false),60000);
 </script>
