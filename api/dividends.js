@@ -58,9 +58,9 @@ function buildResult(ticker, history, currency) {
 
 // ── KRX 데이터포털 ────────────────────────────────────────────────────────
 // https://data.krx.co.kr — 한국거래소 정보데이터시스템
-// 2단계: OTP 발급 → 파일 다운로드
+// 2단계: OTP 발급 → CSV 다운로드
 const KRX_OTP_URL  = 'https://data.krx.co.kr/comm/fileDn/GenerateOTP/generate.cmd';
-const KRX_DOWN_URL = 'https://data.krx.co.kr/comm/fileDn/GenerateOTP/download.cmd';
+const KRX_DOWN_URL = 'https://data.krx.co.kr/comm/fileDn/download_csv/download.cmd';
 const KRX_KEY      = process.env.KRX_API_KEY;
 
 const KRX_HEADERS = {
@@ -69,8 +69,16 @@ const KRX_HEADERS = {
   'User-Agent':   'Mozilla/5.0 (compatible; PortfolioBot/1.0)',
 };
 
-async function krxGenerateOtp(params) {
-  const body = new URLSearchParams({ auth: KRX_KEY, name: 'fileDown', ...params });
+async function krxGenerateOtp(urlCode, extraParams = {}) {
+  // 파라미터명: 'url' (bld 아님), 'name': 'fileDown' 필수
+  const body = new URLSearchParams({
+    locale:       'ko_KR',
+    name:         'fileDown',
+    url:          urlCode,
+    csvxls_isNo:  'false',
+    ...(KRX_KEY ? { auth: KRX_KEY } : {}),
+    ...extraParams,
+  });
   const res = await fetch(KRX_OTP_URL, {
     method: 'POST',
     headers: KRX_HEADERS,
@@ -79,7 +87,7 @@ async function krxGenerateOtp(params) {
   });
   if (!res.ok) throw new Error(`KRX OTP HTTP ${res.status}`);
   const otp = await res.text();
-  if (!otp || otp.length < 10) throw new Error(`KRX OTP 응답 이상: ${otp}`);
+  if (!otp || otp.length < 10) throw new Error(`KRX OTP 응답 이상: "${otp.slice(0,100)}"`);
   return otp.trim();
 }
 
@@ -87,11 +95,13 @@ async function krxDownload(otp) {
   const res = await fetch(KRX_DOWN_URL, {
     method: 'POST',
     headers: KRX_HEADERS,
-    body: `code=${encodeURIComponent(otp)}`,
+    body: new URLSearchParams({ code: otp }).toString(),
     signal: AbortSignal.timeout(10000),
   });
   if (!res.ok) throw new Error(`KRX download HTTP ${res.status}`);
-  const text = await res.text();
+  // CSV (EUC-KR) 또는 JSON 반환
+  const buf  = await res.arrayBuffer();
+  const text = new TextDecoder('euc-kr').decode(buf);
   try { return JSON.parse(text); } catch { return text; }
 }
 
@@ -116,12 +126,10 @@ async function fetchKrxDividend(ticker, dbg) {
 
   // ── 시도 1: ETF 분배금 지급 현황 (MDCSTAT04401) ─────────────────────────
   try {
-    const otp = await krxGenerateOtp({
-      bld:    'dbms/MDC/STAT/standard/MDCSTAT04401',
-      isuCd:  code,
-      strtDd: startDt,
-      endDd:  endDt,
-    });
+    const otp = await krxGenerateOtp(
+      'dbms/MDC/STAT/standard/MDCSTAT04401',
+      { isuCd: code, strtDd: startDt, endDd: endDt }
+    );
     dbg.push({ step: 'krx_otp1', otp: otp.slice(0,20) + '...' });
 
     const data = await krxDownload(otp);
@@ -164,7 +172,7 @@ async function fetchKrxDividend(ticker, dbg) {
 
   for (const bld of altBlds) {
     try {
-      const otp = await krxGenerateOtp({ bld, isuCd: code, strtDd: startDt, endDd: endDt });
+      const otp = await krxGenerateOtp(bld, { isuCd: code, strtDd: startDt, endDd: endDt });
       const data = await krxDownload(otp);
       const sample = JSON.stringify(data).slice(0, 300);
       dbg.push({ step: 'krx_alt', bld, sample });
