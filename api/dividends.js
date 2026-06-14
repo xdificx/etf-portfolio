@@ -1,7 +1,8 @@
 /**
  * Vercel Serverless Function — /api/dividends
  *
- * GET /api/dividends?tickers=SPY,AAPL,069500.KS,0177N0
+ * GET /api/dividends?tickers=SPY,069500.KS,0177N0
+ * GET /api/dividends?tickers=069500.KS&debug=1   ← 오류 원인 확인용
  *
  * 국내 ETF/주식 → 네이버 Finance (JSON API → ETF HTML → 주식 HTML 순서)
  * 해외 ETF/주식 → Yahoo Finance
@@ -13,7 +14,6 @@ function isKoreanTicker(ticker) {
 }
 
 function getKrCode(ticker) {
-  // "069500.KS" → "069500",  "0177N0" → "0177N0"
   return ticker.replace(/\.(KS|KQ|KP)$/i, '');
 }
 
@@ -31,11 +31,11 @@ function detectFrequency(history) {
     const d2 = new Date(history[i].date);
     gaps.push((d2 - d1) / (1000 * 60 * 60 * 24));
   }
-  const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
-  if      (avgGap < 45)  return 'monthly';
-  else if (avgGap < 120) return 'quarterly';
-  else if (avgGap < 270) return 'semi-annual';
-  else                   return 'annual';
+  const avg = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+  if (avg < 45)  return 'monthly';
+  if (avg < 120) return 'quarterly';
+  if (avg < 270) return 'semi-annual';
+  return 'annual';
 }
 
 function buildResult(ticker, history, currency) {
@@ -61,30 +61,52 @@ const NAVER_HEADERS = {
   'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   'Referer':         'https://finance.naver.com',
   'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8',
-  'Accept':          'application/json, text/html, */*',
+  'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
 };
 
+// EUC-KR로 인코딩된 HTML을 올바르게 읽기
+async function fetchKrHtml(url) {
+  const res = await fetch(url, {
+    headers: NAVER_HEADERS,
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!res.ok) return { ok: false, status: res.status, html: null };
+  // 네이버 Finance HTML은 EUC-KR(CP949) 인코딩 — TextDecoder로 변환
+  const buf = await res.arrayBuffer();
+  try {
+    const html = new TextDecoder('euc-kr').decode(buf);
+    return { ok: true, status: res.status, html };
+  } catch {
+    // TextDecoder가 euc-kr 미지원 환경(드물지만) → UTF-8 폴백
+    const html = new TextDecoder('utf-8').decode(buf);
+    return { ok: true, status: res.status, html };
+  }
+}
+
 // ── ① 네이버 ETF 분배금 JSON API ─────────────────────────────────────────
-// 네이버 증권 앱 내부 REST API — 분배금 이력을 JSON으로 반환
-async function fetchNaverEtfJson(code) {
+async function fetchNaverEtfJson(code, dbg) {
   const url = `https://api.stock.naver.com/api/item/etf/${code}/distribution?page=1&pageSize=24`;
   try {
     const res = await fetch(url, {
-      headers: NAVER_HEADERS,
+      headers: { ...NAVER_HEADERS, Accept: 'application/json, */*' },
       signal: AbortSignal.timeout(6000),
     });
+    dbg.push({ step: 'naver_json', url, status: res.status });
     if (!res.ok) return null;
-    const json = await res.json();
 
-    // 응답 구조: { distributionList: [{standardDate, distribution, ...}] }
-    // 또는 { list: [...] } 형태일 수 있음
+    const json = await res.json();
+    dbg.push({ step: 'naver_json_body', keys: Object.keys(json) });
+
     const list = json?.distributionList ?? json?.list ?? json?.data ?? [];
-    if (!Array.isArray(list) || !list.length) return null;
+    if (!Array.isArray(list) || !list.length) {
+      dbg.push({ step: 'naver_json_empty', sample: JSON.stringify(json).slice(0, 300) });
+      return null;
+    }
 
     const history = [];
     for (const item of list) {
       const rawDate = item.standardDate ?? item.date ?? item.exDate ?? '';
-      const date    = rawDate.replace(/\./g, '-');   // "2024.03.08" → "2024-03-08"
+      const date    = rawDate.replace(/\./g, '-');
       const amount  = parseFloat(
         String(item.distribution ?? item.amount ?? item.divAmount ?? 0).replace(/,/g, '')
       );
@@ -94,28 +116,26 @@ async function fetchNaverEtfJson(code) {
     }
     return history.length ? buildResult(code, history, 'KRW') : null;
   } catch (e) {
-    console.warn(`네이버 ETF JSON API 실패 (${code}):`, e.message);
+    dbg.push({ step: 'naver_json_error', error: e.message });
     return null;
   }
 }
 
 // ── ② 네이버 ETF 페이지 HTML 스크래핑 ───────────────────────────────────
-async function fetchNaverEtfHtml(code) {
+async function fetchNaverEtfHtml(code, dbg) {
   const url = `https://finance.naver.com/fund/etfItemInfo.naver?itemCode=${code}`;
   try {
-    const res = await fetch(url, {
-      headers: NAVER_HEADERS,
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) return null;
-    const html = await res.text();
+    const { ok, status, html } = await fetchKrHtml(url);
+    dbg.push({ step: 'naver_etf_html', url, status, htmlLen: html?.length ?? 0 });
+    if (!ok || !html) return null;
+
+    // 한글 깨짐 여부 확인용
+    const hasKorean = /분배기준일|분배금/.test(html);
+    dbg.push({ step: 'naver_etf_html_korean', hasKorean, sample: html.slice(0, 200) });
 
     const history = [];
-
-    // 패턴 A: "분배기준일" 섹션 이후 날짜+금액 td 순서 파싱
     const section = html.match(/분배기준일[\s\S]{0,8000}/);
     if (section) {
-      // <td>2024.03.08</td> ... <td>50</td> 형태
       const rowRe = /(\d{4}\.\d{2}\.\d{2})<\/td>[\s\S]*?<td[^>]*>\s*([\d,]+)\s*<\/td>/g;
       let m;
       while ((m = rowRe.exec(section[0])) !== null) {
@@ -124,40 +144,32 @@ async function fetchNaverEtfHtml(code) {
         if (amount > 0) history.push({ date, amount });
       }
     }
-
-    // 패턴 B: 보다 느슨한 날짜 매칭
     if (!history.length) {
       const altRe = /(\d{4})\.(\d{2})\.(\d{2})[^<]*<\/td>[\s\S]*?<td[^>]*>\s*([\d,]+)\s*<\/td>/g;
       let m2;
       while ((m2 = altRe.exec(html)) !== null) {
         const date   = `${m2[1]}-${m2[2]}-${m2[3]}`;
         const amount = parseFloat(m2[4].replace(/,/g, ''));
-        if (amount > 0 && amount < 1000000) history.push({ date, amount });
+        if (amount > 0 && amount < 1_000_000) history.push({ date, amount });
       }
     }
-
+    dbg.push({ step: 'naver_etf_html_rows', count: history.length });
     return history.length ? buildResult(code, history, 'KRW') : null;
   } catch (e) {
-    console.warn(`네이버 ETF HTML 스크래핑 실패 (${code}):`, e.message);
+    dbg.push({ step: 'naver_etf_html_error', error: e.message });
     return null;
   }
 }
 
-// ── ③ 네이버 주식 배당 페이지 HTML 스크래핑 ─────────────────────────────
-// 일반 주식(삼성전자 등) 배당 이력 — ETF가 아닌 경우 폴백
-async function fetchNaverStockHtml(code) {
+// ── ③ 네이버 주식 배당 HTML 스크래핑 ────────────────────────────────────
+async function fetchNaverStockHtml(code, dbg) {
   const url = `https://finance.naver.com/item/coinfo.naver?code=${code}&target=divpay`;
   try {
-    const res = await fetch(url, {
-      headers: NAVER_HEADERS,
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) return null;
-    const html = await res.text();
+    const { ok, status, html } = await fetchKrHtml(url);
+    dbg.push({ step: 'naver_stock_html', url, status, htmlLen: html?.length ?? 0 });
+    if (!ok || !html) return null;
 
     const history = [];
-
-    // 배당기준일 + 현금 배당금 패턴
     const re = /(\d{4}\.\d{2}\.\d{2})<\/td>[\s\S]*?현금[\s\S]*?<td[^>]*>\s*([\d,]+)\s*<\/td>/g;
     let m;
     while ((m = re.exec(html)) !== null) {
@@ -165,52 +177,36 @@ async function fetchNaverStockHtml(code) {
       const amount = parseFloat(m[2].replace(/,/g, ''));
       if (amount > 0) history.push({ date, amount });
     }
-
-    // 폴백: 현금 구분 없이 날짜+금액만
     if (!history.length) {
       const altRe = /(\d{4})\.(\d{2})\.(\d{2})<\/td>[\s\S]*?<td[^>]*>\s*([\d,]+)\s*원?<\/td>/g;
       let m2;
       while ((m2 = altRe.exec(html)) !== null) {
         const date   = `${m2[1]}-${m2[2]}-${m2[3]}`;
         const amount = parseFloat(m2[4].replace(/,/g, ''));
-        if (amount > 0 && amount < 1000000) history.push({ date, amount });
+        if (amount > 0 && amount < 1_000_000) history.push({ date, amount });
       }
     }
-
+    dbg.push({ step: 'naver_stock_html_rows', count: history.length });
     return history.length ? buildResult(code, history, 'KRW') : null;
   } catch (e) {
-    console.warn(`네이버 주식 배당 HTML 실패 (${code}):`, e.message);
+    dbg.push({ step: 'naver_stock_html_error', error: e.message });
     return null;
   }
 }
 
-// ── 국내 배당 메인: JSON → ETF HTML → 주식 HTML ─────────────────────────
-async function fetchKoreanDividend(ticker) {
+// ── 국내 배당 메인 ────────────────────────────────────────────────────────
+async function fetchKoreanDividend(ticker, dbg) {
   const code = getKrCode(ticker);
-  console.log(`국내 배당 조회: ${ticker} (code=${code})`);
 
-  // 1) 네이버 ETF JSON API
-  let result = await fetchNaverEtfJson(code);
-  if (result) {
-    console.log(`✓ 네이버 ETF JSON: ${ticker} → ${result.frequency} / ${result.avgAmount}원`);
-    return result;
-  }
+  let result = await fetchNaverEtfJson(code, dbg);
+  if (result) { result.source = 'naver_json'; return result; }
 
-  // 2) 네이버 ETF HTML
-  result = await fetchNaverEtfHtml(code);
-  if (result) {
-    console.log(`✓ 네이버 ETF HTML: ${ticker} → ${result.frequency} / ${result.avgAmount}원`);
-    return result;
-  }
+  result = await fetchNaverEtfHtml(code, dbg);
+  if (result) { result.source = 'naver_etf_html'; return result; }
 
-  // 3) 네이버 주식 배당 HTML
-  result = await fetchNaverStockHtml(code);
-  if (result) {
-    console.log(`✓ 네이버 주식 HTML: ${ticker} → ${result.frequency} / ${result.avgAmount}원`);
-    return result;
-  }
+  result = await fetchNaverStockHtml(code, dbg);
+  if (result) { result.source = 'naver_stock_html'; return result; }
 
-  console.warn(`✗ 국내 배당 데이터 없음: ${ticker}`);
   return null;
 }
 
@@ -218,7 +214,6 @@ async function fetchKoreanDividend(ticker) {
 async function fetchYahooDividend(ticker) {
   const yahooTicker = toYahooTicker(ticker);
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooTicker)}?range=2y&interval=1mo&events=div&includePrePost=false`;
-
   try {
     const res = await fetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PortfolioBot/1.0)' },
@@ -226,18 +221,14 @@ async function fetchYahooDividend(ticker) {
     });
     if (!res.ok) return null;
     const d = await res.json();
-
     const result = d?.chart?.result?.[0];
     if (!result) return null;
-
     const divEvents = result.events?.dividends;
     if (!divEvents || !Object.keys(divEvents).length) return null;
-
     const history = Object.values(divEvents).map(e => ({
       date:   new Date(e.date * 1000).toISOString().slice(0, 10),
       amount: e.amount,
     }));
-
     return buildResult(ticker, history, result.meta?.currency || 'USD');
   } catch (e) {
     console.warn(`Yahoo 배당 실패 (${ticker}):`, e.message);
@@ -253,10 +244,8 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET')     return res.status(405).json({ error: 'Method not allowed' });
 
-  const tickers = (req.query.tickers || '')
-    .split(',')
-    .map(t => t.trim())
-    .filter(Boolean);
+  const tickers  = (req.query.tickers || '').split(',').map(t => t.trim()).filter(Boolean);
+  const debugMode = req.query.debug === '1';
 
   if (!tickers.length) {
     return res.status(400).json({ error: 'tickers 파라미터가 필요합니다.' });
@@ -264,31 +253,35 @@ export default async function handler(req, res) {
 
   const dividends = {};
   const noData    = [];
+  const debugInfo = {};
 
   await Promise.all(tickers.map(async ticker => {
+    const dbg = [];
     try {
       const data = isKoreanTicker(ticker)
-        ? await fetchKoreanDividend(ticker)
+        ? await fetchKoreanDividend(ticker, dbg)
         : await fetchYahooDividend(ticker);
 
       if (data) dividends[ticker] = data;
       else      noData.push(ticker);
     } catch (e) {
       noData.push(ticker);
-      console.error(`배당 오류 ${ticker}:`, e.message);
+      dbg.push({ step: 'handler_error', error: e.message });
     }
+    if (debugMode) debugInfo[ticker] = dbg;
   }));
 
-  // 6시간 CDN 캐시
-  res.setHeader('Cache-Control', 'public, s-maxage=21600, stale-while-revalidate=3600');
+  // 디버그 모드에서는 캐시 비활성화
+  if (debugMode) {
+    res.setHeader('Cache-Control', 'no-store');
+  } else {
+    res.setHeader('Cache-Control', 'public, s-maxage=21600, stale-while-revalidate=3600');
+  }
 
   return res.json({
     updatedAt: new Date().toISOString(),
     dividends,
-    meta: {
-      total:   tickers.length,
-      success: Object.keys(dividends).length,
-      noData,
-    },
+    meta: { total: tickers.length, success: Object.keys(dividends).length, noData },
+    ...(debugMode && { debug: debugInfo }),
   });
 }
