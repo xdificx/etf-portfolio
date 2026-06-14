@@ -106,6 +106,10 @@
   <span id="auth-status" style="color:var(--muted)">Firebase 미설정 — 로컬 저장 모드</span>
   <div id="auth-btns"></div>
 </div>
+<div id="price-bar" style="background:var(--card2);border-bottom:1px solid var(--border);padding:5px 16px;font-size:12px;display:flex;justify-content:space-between;align-items:center;gap:8px">
+  <span id="price-bar-text" style="color:var(--muted)">가격 정보 없음</span>
+  <span id="price-bar-loading" style="color:var(--accent);display:none">⟳ 가격 업데이트 중…</span>
+</div>
 
 <div id="tab-dashboard"    class="tab active"></div>
 <div id="tab-holdings"     class="tab"></div>
@@ -373,10 +377,14 @@ function addHistorySnapshot(kospi,sp500){
 // ════════════════════════════════════════════════════════════════
 async function fetchYF(ticker){
   const url='https://query1.finance.yahoo.com/v8/finance/chart/'+ticker+'?range=1d&interval=1d';
-  const proxy='https://api.allorigins.win/raw?url='+encodeURIComponent(url);
-  for(const u of[url,proxy]){
+  // 직접 요청 스킵 — 브라우저에서 CORS로 항상 실패하므로 프록시로 바로 시도
+  const proxies=[
+    'https://corsproxy.io/?'+encodeURIComponent(url),
+    'https://api.allorigins.win/raw?url='+encodeURIComponent(url)
+  ];
+  for(const u of proxies){
     try{
-      const r=await fetch(u,{signal:AbortSignal.timeout(8000)});
+      const r=await fetch(u,{signal:AbortSignal.timeout(7000)});
       const d=await r.json();
       const meta=d&&d.chart&&d.chart.result&&d.chart.result[0]&&d.chart.result[0].meta;
       if(meta&&meta.regularMarketPrice){
@@ -396,13 +404,45 @@ async function fetchRate(){
   }catch(e){return null}
 }
 
-async function fetchAllPrices(){
+function fmtRelTime(isoStr){
+  if(!isoStr)return null;
+  const diff=Math.floor((Date.now()-new Date(isoStr).getTime())/1000);
+  if(diff<60)return '방금 전';
+  if(diff<3600)return Math.floor(diff/60)+'분 전';
+  if(diff<86400)return Math.floor(diff/3600)+'시간 전';
+  return Math.floor(diff/86400)+'일 전';
+}
+
+function updatePriceBar(loading){
+  const bar=document.getElementById('price-bar-text');
+  const spin=document.getElementById('price-bar-loading');
+  if(!bar)return;
+  if(loading){spin.style.display='';return}
+  spin.style.display='none';
+  const t=S._lastFetch;
+  bar.textContent=t?('마지막 업데이트: '+fmtRelTime(t)+' ('+new Date(t).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})+')'):'가격 정보 없음 — 가격 업데이트 버튼을 눌러주세요';
+}
+
+const CACHE_MINUTES=30;
+function isCacheValid(fetchedAt){
+  if(!fetchedAt)return false;
+  return(Date.now()-new Date(fetchedAt).getTime())<CACHE_MINUTES*60*1000;
+}
+
+async function fetchAllPrices(silent){
   const h=computeHoldings();
   const tickers=Object.keys(h).filter(t=>h[t].qty>0);
-  if(!tickers.length){toast('보유 종목이 없습니다');return}
-  toast('가격 조회 중…');
+  if(!tickers.length){if(!silent)toast('보유 종목이 없습니다');return}
+  // 30분 캐시: 최근 업데이트가 유효하면 재요청 스킵
+  if(silent&&isCacheValid(S._lastFetch)){
+    updatePriceBar(false);return;
+  }
+  if(!silent)toast('가격 조회 중…');
+  updatePriceBar(true);
+  // 캐시가 유효한 개별 종목은 스킵
+  const tickersToFetch=silent?tickers.filter(t=>!isCacheValid(S.prices[t]&&S.prices[t].fetchedAt)):tickers;
   const allTasks=[fetchRate(),fetchYF('^KS11'),fetchYF('^GSPC'),
-    ...tickers.map(t=>fetchYF(t).then(r=>({ticker:t,r})))];
+    ...tickersToFetch.map(t=>fetchYF(t).then(r=>({ticker:t,r})))];
   const[rate,kospiR,sp500R,...stockR]=await Promise.all(allTasks);
   if(rate)S._cachedRate=rate;
   let ok=0;
@@ -412,8 +452,8 @@ async function fetchAllPrices(){
   }
   addHistorySnapshot(kospiR?kospiR.price:null,sp500R?sp500R.price:null);
   S._lastFetch=new Date().toISOString();
-  save();renderAll();
-  toast('✅ '+ok+'/'+tickers.length+'개 종목 업데이트 완료');
+  save();renderAll();updatePriceBar(false);
+  if(!silent)toast('✅ '+ok+'/'+tickersToFetch.length+'개 종목 업데이트 완료');
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1158,6 +1198,11 @@ load();
 updateAuthBar();
 initFirebase();
 renderDashboard();
+// 캐시된 데이터 먼저 표시 후 백그라운드에서 가격 갱신
+updatePriceBar(false);
+setTimeout(()=>fetchAllPrices(true),500);
+// 1분마다 "몇 분 전" 텍스트 갱신
+setInterval(()=>updatePriceBar(false),60000);
 </script>
 </body>
 </html>
