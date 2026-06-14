@@ -15,18 +15,58 @@
 const KIS_REAL  = 'https://openapi.koreainvestment.com:9443';
 const KIS_PAPER = 'https://openapivts.koreainvestment.com:29443';
 
-// Lambda 컨테이너 내 토큰 캐시 (warm 재사용 시 유효)
-let _token = null;
-let _tokenExp = 0;
+// 컨테이너 내 메모리 캐시 (warm 재사용 시 1차 히트)
+let _memToken = null;
+let _memTokenExp = 0;
 
 function kisBase() {
   return process.env.KIS_MODE === 'paper' ? KIS_PAPER : KIS_REAL;
 }
 
-// ── KIS 토큰 발급 / 캐시 ──────────────────────────────────────────
-async function getToken() {
-  if (_token && Date.now() < _tokenExp) return _token;
+// ── Vercel KV REST API 헬퍼 ───────────────────────────────────────
+// KV가 연결되어 있으면 컨테이너 간 토큰 공유 가능 (cold start 시에도 재사용)
+const KV_URL   = process.env.KV_REST_API_URL;
+const KV_TOKEN = process.env.KV_REST_API_TOKEN;
+const KV_KEY   = 'kis_access_token';
 
+async function kvGet() {
+  if (!KV_URL || !KV_TOKEN) return null;
+  try {
+    const r = await fetch(`${KV_URL}/get/${KV_KEY}`, {
+      headers: { Authorization: `Bearer ${KV_TOKEN}` },
+      signal: AbortSignal.timeout(2000),
+    });
+    const j = await r.json();
+    return j.result || null;
+  } catch { return null; }
+}
+
+async function kvSet(token, ttlSeconds) {
+  if (!KV_URL || !KV_TOKEN) return;
+  try {
+    await fetch(`${KV_URL}/set/${KV_KEY}/${encodeURIComponent(token)}/ex/${ttlSeconds}`, {
+      headers: { Authorization: `Bearer ${KV_TOKEN}` },
+      signal: AbortSignal.timeout(2000),
+    });
+  } catch {}
+}
+
+// ── KIS 토큰 발급 / 캐시 ──────────────────────────────────────────
+// 우선순위: 1) 메모리 캐시  2) Vercel KV  3) 신규 발급
+async function getToken() {
+  // 1) 메모리 캐시 확인
+  if (_memToken && Date.now() < _memTokenExp) return _memToken;
+
+  // 2) Vercel KV 확인 (cold start 후에도 토큰 재사용)
+  const cached = await kvGet();
+  if (cached) {
+    console.log('KIS 토큰 KV 캐시 사용');
+    _memToken    = cached;
+    _memTokenExp = Date.now() + 60 * 60 * 1000; // 메모리엔 1시간만
+    return cached;
+  }
+
+  // 3) 신규 발급 (SMS 발송됨 — 하루 1회 이하)
   const res = await fetch(`${kisBase()}/oauth2/tokenP`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -41,10 +81,16 @@ async function getToken() {
   const d = await res.json();
   if (!d.access_token) throw new Error('KIS token 발급 실패: ' + JSON.stringify(d));
 
-  _token    = d.access_token;
-  _tokenExp = Date.now() + 23 * 60 * 60 * 1000; // 23시간 캐시 (토큰 유효기간 24h)
-  console.log('KIS 토큰 발급 완료');
-  return _token;
+  const token   = d.access_token;
+  const ttl     = 23 * 60 * 60; // 23시간(초)
+  _memToken     = token;
+  _memTokenExp  = Date.now() + ttl * 1000;
+
+  // KV에 저장 (비동기, 실패해도 무관)
+  kvSet(token, ttl);
+
+  console.log('KIS 신규 토큰 발급 완료 (KV 저장)');
+  return token;
 }
 
 // ── KIS 국내 주식 현재가 ──────────────────────────────────────────
