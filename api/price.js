@@ -111,10 +111,17 @@ async function fetchYahoo(ticker) {
   };
 }
 
-// ── 한국 개별 주식 여부 판별 ──────────────────────────────────────
+// ── 한국 개별 주식/ETF 여부 판별 ─────────────────────────────────
 // 지수(^KS11, ^KQ11)는 Yahoo Finance 사용 — KIS 지수 API는 별도 tr_id 필요
 function isKoreanStock(ticker) {
   return /\.(KS|KQ|KP)$/i.test(ticker) || /^\d{6}$/.test(ticker);
+}
+
+// ── Yahoo Finance 한국 티커 변환 ──────────────────────────────────
+// 6자리 숫자만 있으면 .KS 붙여서 Yahoo에 전달
+function toYahooTicker(ticker) {
+  if (/^\d{6}$/.test(ticker)) return ticker + '.KS';
+  return ticker;
 }
 
 // ── 메인 핸들러 ───────────────────────────────────────────────────
@@ -140,22 +147,30 @@ export default async function handler(req, res) {
   await Promise.all(tickers.map(async (ticker) => {
     try {
       let data = null;
+      const isKorean = isKoreanStock(ticker);
 
-      if (hasKis && isKoreanStock(ticker)) {
-        // 한국 개별 주식 → KIS API 우선
+      if (hasKis && isKorean) {
+        // 한국 주식/ETF → KIS API 우선
         data = await fetchKis(ticker).catch(e => {
-          console.warn(`KIS ${ticker} 실패, Yahoo로 폴백:`, e.message);
+          console.warn(`KIS ${ticker} 실패 (${e.message}), Yahoo로 폴백`);
           return null;
         });
+        if (data) console.log(`KIS OK: ${ticker} → ${data.price}`);
       }
 
       // KIS 실패하거나 해외 종목이면 Yahoo Finance
       if (!data) {
-        data = await fetchYahoo(ticker);
+        const yahooTicker = toYahooTicker(ticker);
+        data = await fetchYahoo(yahooTicker);
+        if (data) {
+          data.source = isKorean ? 'Yahoo(KR)' : 'Yahoo';
+          console.log(`Yahoo OK: ${ticker}(→${yahooTicker}) → ${data.price}`);
+        } else {
+          console.warn(`❌ ${ticker}: KIS + Yahoo 모두 실패 (Yahoo ticker: ${yahooTicker})`);
+        }
       }
 
       if (data) prices[ticker] = data;
-      else console.warn(`${ticker}: 가격 조회 실패`);
 
     } catch (e) {
       console.error(`${ticker} 오류:`, e.message);
