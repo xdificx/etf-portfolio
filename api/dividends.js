@@ -56,17 +56,24 @@ function buildResult(ticker, history, currency) {
   };
 }
 
-// ── KRX OpenAPI ───────────────────────────────────────────────────────────
-// 한국거래소 공식 분배금 데이터 (open.krx.co.kr)
-// 2단계: OTP 발급 → 데이터 다운로드
-const KRX_BASE   = 'https://openapi.krx.co.kr/contents/COM';
-const KRX_KEY    = process.env.KRX_API_KEY;
+// ── KRX 데이터포털 ────────────────────────────────────────────────────────
+// https://data.krx.co.kr — 한국거래소 정보데이터시스템
+// 2단계: OTP 발급 → 파일 다운로드
+const KRX_OTP_URL  = 'https://data.krx.co.kr/comm/fileDn/GenerateOTP/generate.cmd';
+const KRX_DOWN_URL = 'https://data.krx.co.kr/comm/fileDn/GenerateOTP/download.cmd';
+const KRX_KEY      = process.env.KRX_API_KEY;
+
+const KRX_HEADERS = {
+  'Content-Type': 'application/x-www-form-urlencoded',
+  'Referer':      'https://data.krx.co.kr/',
+  'User-Agent':   'Mozilla/5.0 (compatible; PortfolioBot/1.0)',
+};
 
 async function krxGenerateOtp(params) {
   const body = new URLSearchParams({ auth: KRX_KEY, name: 'fileDown', ...params });
-  const res = await fetch(`${KRX_BASE}/GenerateOTP.cmd`, {
+  const res = await fetch(KRX_OTP_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers: KRX_HEADERS,
     body: body.toString(),
     signal: AbortSignal.timeout(8000),
   });
@@ -77,9 +84,9 @@ async function krxGenerateOtp(params) {
 }
 
 async function krxDownload(otp) {
-  const res = await fetch(`${KRX_BASE}/fileDown.cmd`, {
+  const res = await fetch(KRX_DOWN_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers: KRX_HEADERS,
     body: `code=${encodeURIComponent(otp)}`,
     signal: AbortSignal.timeout(10000),
   });
