@@ -6,9 +6,6 @@
     },
     "api/dividends.js": {
       "maxDuration": 30
-    },
-    "api/trading-day.js": {
-      "maxDuration": 5
     }
   }
 }
