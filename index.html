@@ -2352,6 +2352,7 @@ service cloud.firestore {
         <button class="btn btn-ghost" onclick="exportData()">📤 내보내기 (JSON)</button>
         <button class="btn btn-ghost" onclick="document.getElementById('importFile').click()">📥 가져오기</button>
         <input type="file" id="importFile" accept=".json" style="display:none" onchange="importData(event)">
+        <button class="btn btn-ghost" style="color:var(--yellow);border-color:var(--yellow)" onclick="clearTxData()">🗑 거래 데이터만 초기화</button>
         <button class="btn btn-ghost" style="color:var(--red);border-color:var(--red)" onclick="clearAll()">🗑 전체 초기화</button>
       </div>
     </div>
@@ -2708,6 +2709,12 @@ function clearAll(){
   if(!confirm('⚠️ 모든 데이터가 삭제됩니다.'))return;
   if(!confirm('정말로 초기화하시겠습니까?'))return;
   S=mkState();_charts={};save();renderAll();toast('초기화 완료');
+}
+
+function clearTxData(){
+  if(!confirm('거래내역, 입출금, 배당금을 모두 삭제합니다.\n계좌·DCA 계획·티커 매핑은 유지됩니다.\n\n계속하시겠습니까?'))return;
+  S.transactions=[];S.cashflows=[];S.dividends=[];
+  save();renderAll();toast('✅ 거래 데이터 초기화 완료 — 이제 엑셀 파일을 다시 가져오세요');
 }
 
 // ════════════════════════════════════════════════════════════════
