@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>📊 주식 포트폴리오</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
   <style>
     :root {
       --bg:#0f1117; --card:#1a1d2e; --card2:#21253a;
@@ -88,6 +89,23 @@
 
     .fb-step{background:var(--card2);border-radius:8px;padding:12px 14px;margin-bottom:8px;font-size:13px;line-height:1.7}
     .fb-step strong{color:var(--accent)}
+
+    /* ── 스프레드시트 ── */
+    .ss-tabs{display:flex;gap:4px;margin-bottom:12px;border-bottom:1px solid var(--border);padding-bottom:0}
+    .ss-tab{padding:7px 14px;border:none;background:none;color:var(--muted);cursor:pointer;font-size:13px;border-bottom:2px solid transparent;margin-bottom:-1px}
+    .ss-tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+    .ss-toolbar{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+    .ss-wrap{overflow:auto;max-height:calc(100vh - 240px);border:1px solid var(--border);border-radius:10px}
+    .ss-tbl{border-collapse:collapse;font-size:12.5px;white-space:nowrap;width:100%}
+    .ss-tbl thead th{position:sticky;top:0;background:var(--card2);color:var(--muted);font-weight:600;padding:8px 10px;border-bottom:2px solid var(--border);border-right:1px solid var(--border);text-align:left;z-index:2}
+    .ss-tbl thead th:first-child{position:sticky;left:0;z-index:3}
+    .ss-tbl tbody td{padding:7px 10px;border-bottom:1px solid var(--border);border-right:1px solid rgba(255,255,255,.04);vertical-align:middle}
+    .ss-tbl tbody td:first-child{position:sticky;left:0;background:var(--card);font-weight:600;z-index:1;border-right:1px solid var(--border)}
+    .ss-tbl tbody tr:hover td{background:rgba(255,255,255,.025)}
+    .ss-tbl tbody tr:hover td:first-child{background:var(--card2)}
+    .ss-num{text-align:right;font-variant-numeric:tabular-nums}
+    .ss-center{text-align:center}
+    .ss-badge{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700}
   </style>
 </head>
 <body>
@@ -99,6 +117,7 @@
   <button onclick="showTab('cashflows')" data-tab="cashflows">입출금</button>
   <button onclick="showTab('dividends')" data-tab="dividends">배당금</button>
   <button onclick="showTab('tax')" data-tab="tax">세금</button>
+  <button onclick="showTab('spreadsheet')" data-tab="spreadsheet">📊 시트</button>
   <button onclick="showTab('settings')" data-tab="settings">설정</button>
 </nav>
 
@@ -117,6 +136,7 @@
 <div id="tab-cashflows"    class="tab"></div>
 <div id="tab-dividends"    class="tab"></div>
 <div id="tab-tax"          class="tab"></div>
+<div id="tab-spreadsheet"  class="tab"></div>
 <div id="tab-settings"     class="tab"></div>
 <div id="toast" class="toast"></div>
 
@@ -639,6 +659,7 @@ function renderTab(n){
   else if(n==='cashflows')renderCashflows();
   else if(n==='dividends')renderDividends();
   else if(n==='tax')renderTax();
+  else if(n==='spreadsheet')renderSpreadsheet();
   else if(n==='settings')renderSettings();
 }
 function renderAll(){
@@ -1413,6 +1434,258 @@ function renderTax(){
         □ 해외 ETF (미국 상장): 양도소득세 대상 (위와 동일)
       </div>
     </div>`;
+}
+
+// ════════════════════════════════════════════════════════════════
+// RENDER — SPREADSHEET
+// ════════════════════════════════════════════════════════════════
+let _ssTab = 'holdings';
+
+function renderSpreadsheet() {
+  const el = document.getElementById('tab-spreadsheet');
+  const holdings = computeHoldings(_acctFilter);
+  const rate = getRate();
+
+  // ── 시트 1: 보유종목 ─────────────────────────────────────────
+  function sheetHoldings() {
+    const rows = Object.values(holdings).filter(h => h.qty > 0);
+    if (!rows.length) return '<div class="empty">보유 종목이 없습니다.</div>';
+    const totalVal = rows.reduce((s, h) => {
+      const p = S.prices[h.ticker];
+      return s + toKRW((p ? p.price : h.avgPrice) * h.qty, h.currency);
+    }, 0);
+    let html = `<table class="ss-tbl"><thead><tr>
+      <th>티커</th><th>종목명</th><th>유형</th><th>통화</th>
+      <th class="ss-num">보유수량</th><th class="ss-num">평균단가</th>
+      <th class="ss-num">현재가</th><th class="ss-num">평가금액(₩)</th>
+      <th class="ss-num">매입금액(₩)</th><th class="ss-num">손익(₩)</th>
+      <th class="ss-num">수익률</th><th class="ss-num">비중</th>
+    </tr></thead><tbody>`;
+    for (const h of rows.sort((a,b) => {
+      const va = toKRW((S.prices[a.ticker]?.price||a.avgPrice)*a.qty,a.currency);
+      const vb = toKRW((S.prices[b.ticker]?.price||b.avgPrice)*b.qty,b.currency);
+      return vb - va;
+    })) {
+      const p = S.prices[h.ticker];
+      const curPrice = p ? p.price : h.avgPrice;
+      const valKRW = toKRW(curPrice * h.qty, h.currency);
+      const costKRW = toKRW(h.avgPrice * h.qty, h.currency);
+      const pnl = valKRW - costKRW;
+      const pnlPct = costKRW > 0 ? pnl / costKRW * 100 : 0;
+      const weight = totalVal > 0 ? valKRW / totalVal * 100 : 0;
+      const cls = pnl >= 0 ? 'pos' : 'neg';
+      const fmt = n => n.toLocaleString('ko-KR', {maximumFractionDigits:0});
+      const fmtP = n => n.toFixed(2) + '%';
+      const fmtU = (n, c) => c === 'USD' ? '$' + n.toFixed(2) : fmt(n) + '원';
+      html += `<tr>
+        <td><code>${h.ticker}</code></td>
+        <td>${h.name}</td>
+        <td><span class="ss-badge" style="background:${h.assetType==='etf'?'rgba(99,102,241,.2)':'rgba(245,158,11,.2)'};color:${h.assetType==='etf'?'var(--accent)':'var(--yellow)'}">${h.assetType?.toUpperCase()||'STOCK'}</span></td>
+        <td class="ss-center">${h.currency}</td>
+        <td class="ss-num">${h.qty % 1 === 0 ? h.qty : h.qty.toFixed(4)}</td>
+        <td class="ss-num">${fmtU(h.avgPrice, h.currency)}</td>
+        <td class="ss-num">${p ? fmtU(curPrice, h.currency) : '<span class="muted">-</span>'}</td>
+        <td class="ss-num">${fmt(valKRW)}원</td>
+        <td class="ss-num">${fmt(costKRW)}원</td>
+        <td class="ss-num ${cls}">${pnl>=0?'+':''}${fmt(pnl)}원</td>
+        <td class="ss-num ${cls}">${pnlPct>=0?'+':''}${fmtP(pnlPct)}</td>
+        <td class="ss-num muted">${fmtP(weight)}</td>
+      </tr>`;
+    }
+    // 합계 행
+    const totalCost = rows.reduce((s,h)=>s+toKRW(h.avgPrice*h.qty,h.currency),0);
+    const totalPnl = totalVal - totalCost;
+    const totalPct = totalCost > 0 ? totalPnl/totalCost*100 : 0;
+    const fmt = n => n.toLocaleString('ko-KR',{maximumFractionDigits:0});
+    html += `<tr style="font-weight:700;background:var(--card2)">
+      <td colspan="7" style="color:var(--muted)">합계</td>
+      <td class="ss-num">${fmt(totalVal)}원</td>
+      <td class="ss-num">${fmt(totalCost)}원</td>
+      <td class="ss-num ${totalPnl>=0?'pos':'neg'}">${totalPnl>=0?'+':''}${fmt(totalPnl)}원</td>
+      <td class="ss-num ${totalPnl>=0?'pos':'neg'}">${totalPct>=0?'+':''}${totalPct.toFixed(2)}%</td>
+      <td class="ss-num">100%</td>
+    </tr>`;
+    return html + '</tbody></table>';
+  }
+
+  // ── 시트 2: 배당금 ──────────────────────────────────────────
+  function sheetDividends() {
+    const divs = (S.dividends || []).sort((a,b) => b.exDate.localeCompare(a.exDate));
+    if (!divs.length) return '<div class="empty">배당금 내역이 없습니다.</div>';
+    const fmt = n => n.toLocaleString('ko-KR',{maximumFractionDigits:0});
+    let html = `<table class="ss-tbl"><thead><tr>
+      <th>배당락일</th><th>지급일</th><th>티커</th><th>종목명</th>
+      <th class="ss-num">주당배당금</th><th class="ss-num">보유수량</th>
+      <th class="ss-num">총배당금</th><th>통화</th>
+      <th class="ss-num">원화환산</th><th class="ss-center">수령여부</th>
+    </tr></thead><tbody>`;
+    let totalKRW = 0;
+    for (const d of divs) {
+      const total = (d.amtPerShare||0) * (d.sharesHeld||0);
+      const krw = toKRW(total, d.currency);
+      if (d.received) totalKRW += krw;
+      html += `<tr>
+        <td>${d.exDate||'-'}</td>
+        <td>${d.payDate||'-'}</td>
+        <td><code>${d.ticker}</code></td>
+        <td>${d.name||'-'}</td>
+        <td class="ss-num">${d.currency==='USD'?'$':'₩'}${(d.amtPerShare||0).toFixed(d.currency==='USD'?4:0)}</td>
+        <td class="ss-num">${d.sharesHeld||0}</td>
+        <td class="ss-num">${d.currency==='USD'?'$'+total.toFixed(2):'₩'+fmt(total)}</td>
+        <td class="ss-center">${d.currency}</td>
+        <td class="ss-num">${fmt(krw)}원</td>
+        <td class="ss-center"><span style="color:${d.received?'var(--green)':'var(--muted)'}">${d.received?'✅':'⏳'}</span></td>
+      </tr>`;
+    }
+    html += `<tr style="font-weight:700;background:var(--card2)">
+      <td colspan="8" style="color:var(--muted)">수령 완료 합계</td>
+      <td class="ss-num pos">${fmt(totalKRW)}원</td><td></td>
+    </tr>`;
+    return html + '</tbody></table>';
+  }
+
+  // ── 시트 3: 수익분석 ────────────────────────────────────────
+  function sheetPnl() {
+    const allTickers = [...new Set(S.transactions.map(t=>t.ticker))];
+    if (!allTickers.length) return '<div class="empty">거래 내역이 없습니다.</div>';
+    const fmt = n => n.toLocaleString('ko-KR',{maximumFractionDigits:0});
+    let html = `<table class="ss-tbl"><thead><tr>
+      <th>티커</th><th>종목명</th><th>통화</th>
+      <th class="ss-num">총매입(₩)</th><th class="ss-num">총매도(₩)</th>
+      <th class="ss-num">실현손익(₩)</th>
+      <th class="ss-num">평가금액(₩)</th><th class="ss-num">평가손익(₩)</th>
+      <th class="ss-num">총손익(₩)</th><th class="ss-num">수익률</th>
+    </tr></thead><tbody>`;
+    let grandTotalBuy=0,grandTotalSell=0,grandRealized=0,grandUnrealized=0;
+    for (const ticker of allTickers.sort()) {
+      const h = holdings[ticker];
+      const txs = S.transactions.filter(t=>t.ticker===ticker);
+      const currency = txs[0]?.currency||'KRW';
+      let totalBuy=0,totalSell=0;
+      for (const tx of txs) {
+        const amt = toKRW(tx.qty*tx.price,tx.currency);
+        if(tx.type==='buy')totalBuy+=amt;else totalSell+=amt;
+      }
+      const realized = toKRW(h?.realizedPnl||0, currency);
+      const p = S.prices[ticker];
+      const curPrice = p?p.price:(h?.avgPrice||0);
+      const unrealized = h&&h.qty>0 ? toKRW((curPrice-h.avgPrice)*h.qty,h.currency) : 0;
+      const evalVal = h&&h.qty>0 ? toKRW(curPrice*h.qty,h.currency) : 0;
+      const totalPnl = realized + unrealized;
+      const pct = totalBuy>0 ? totalPnl/totalBuy*100 : 0;
+      const cls = totalPnl>=0?'pos':'neg';
+      grandTotalBuy+=totalBuy; grandTotalSell+=totalSell;
+      grandRealized+=realized; grandUnrealized+=unrealized;
+      html += `<tr>
+        <td><code>${ticker}</code></td>
+        <td>${txs[0]?.name||'-'}</td>
+        <td class="ss-center">${currency}</td>
+        <td class="ss-num">${fmt(totalBuy)}원</td>
+        <td class="ss-num">${totalSell>0?fmt(totalSell)+'원':'<span class="muted">-</span>'}</td>
+        <td class="ss-num ${realized>=0?'pos':'neg'}">${realized>=0?'+':''}${fmt(realized)}원</td>
+        <td class="ss-num">${evalVal>0?fmt(evalVal)+'원':'<span class="muted">-</span>'}</td>
+        <td class="ss-num ${unrealized>=0?'pos':'neg'}">${h&&h.qty>0?(unrealized>=0?'+':'')+fmt(unrealized)+'원':'<span class="muted">-</span>'}</td>
+        <td class="ss-num ${cls}">${totalPnl>=0?'+':''}${fmt(totalPnl)}원</td>
+        <td class="ss-num ${cls}">${pct>=0?'+':''}${pct.toFixed(2)}%</td>
+      </tr>`;
+    }
+    const grandTotal=grandRealized+grandUnrealized;
+    const grandPct=grandTotalBuy>0?grandTotal/grandTotalBuy*100:0;
+    html += `<tr style="font-weight:700;background:var(--card2)">
+      <td colspan="3" style="color:var(--muted)">합계</td>
+      <td class="ss-num">${fmt(grandTotalBuy)}원</td>
+      <td class="ss-num">${grandTotalSell>0?fmt(grandTotalSell)+'원':'-'}</td>
+      <td class="ss-num ${grandRealized>=0?'pos':'neg'}">${grandRealized>=0?'+':''}${fmt(grandRealized)}원</td>
+      <td></td>
+      <td class="ss-num ${grandUnrealized>=0?'pos':'neg'}">${grandUnrealized>=0?'+':''}${fmt(grandUnrealized)}원</td>
+      <td class="ss-num ${grandTotal>=0?'pos':'neg'}">${grandTotal>=0?'+':''}${fmt(grandTotal)}원</td>
+      <td class="ss-num ${grandTotal>=0?'pos':'neg'}">${grandPct>=0?'+':''}${grandPct.toFixed(2)}%</td>
+    </tr>`;
+    return html + '</tbody></table>';
+  }
+
+  const sheets = { holdings: sheetHoldings, dividends: sheetDividends, pnl: sheetPnl };
+  const labels = { holdings: '보유종목', dividends: '배당금', pnl: '수익분석' };
+
+  el.innerHTML = `
+    <div style="max-width:100%;padding:16px">
+      <div class="row-between" style="margin-bottom:12px">
+        <div style="font-size:16px;font-weight:700">📊 스프레드시트</div>
+        <button class="btn btn-ghost" onclick="ssExportExcel()" style="font-size:12px">⬇ Excel 내보내기</button>
+      </div>
+      <div class="ss-tabs">
+        ${Object.keys(sheets).map(k=>`
+          <button class="ss-tab${_ssTab===k?' active':''}" onclick="switchSsTab('${k}')">${labels[k]}</button>
+        `).join('')}
+      </div>
+      <div class="ss-wrap" id="ss-content">
+        ${sheets[_ssTab]()}
+      </div>
+    </div>`;
+}
+
+function switchSsTab(tab) {
+  _ssTab = tab;
+  renderSpreadsheet();
+}
+
+function ssExportExcel() {
+  const wb = XLSX.utils.book_new();
+
+  // 시트 1: 보유종목
+  const holdings = computeHoldings(_acctFilter);
+  const h1 = [['티커','종목명','유형','통화','수량','평균단가','현재가','평가금액(KRW)','매입금액(KRW)','손익(KRW)','수익률(%)','비중(%)']];
+  const rate = getRate();
+  const allH = Object.values(holdings).filter(h=>h.qty>0);
+  const totalVal = allH.reduce((s,h)=>{const p=S.prices[h.ticker];return s+toKRW((p?p.price:h.avgPrice)*h.qty,h.currency);},0);
+  for (const h of allH) {
+    const p=S.prices[h.ticker], cur=p?p.price:h.avgPrice;
+    const val=toKRW(cur*h.qty,h.currency), cost=toKRW(h.avgPrice*h.qty,h.currency);
+    const pnl=val-cost, pct=cost>0?pnl/cost*100:0, wt=totalVal>0?val/totalVal*100:0;
+    h1.push([h.ticker,h.name,h.assetType,h.currency,h.qty,h.avgPrice,cur,Math.round(val),Math.round(cost),Math.round(pnl),+pct.toFixed(2),+wt.toFixed(2)]);
+  }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(h1), '보유종목');
+
+  // 시트 2: 배당금
+  const h2 = [['배당락일','지급일','티커','종목명','주당배당금','보유수량','총배당금','통화','원화환산','수령여부']];
+  for (const d of (S.dividends||[])) {
+    const total=(d.amtPerShare||0)*(d.sharesHeld||0);
+    h2.push([d.exDate,d.payDate,d.ticker,d.name||'',d.amtPerShare||0,d.sharesHeld||0,total,d.currency,Math.round(toKRW(total,d.currency)),d.received?'수령':'미수령']);
+  }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(h2), '배당금');
+
+  // 시트 3: 거래내역
+  const h3 = [['날짜','구분','티커','종목명','유형','수량','단가','통화','수수료','계좌']];
+  const acctMap = {};
+  (S.accounts||[]).forEach(a=>acctMap[a.id]=a.name);
+  for (const tx of [...S.transactions].sort((a,b)=>b.date.localeCompare(a.date))) {
+    h3.push([tx.date,tx.type==='buy'?'매수':'매도',tx.ticker,tx.name,tx.assetType,tx.qty,tx.price,tx.currency,tx.fee||0,acctMap[tx.account]||tx.account||'']);
+  }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(h3), '거래내역');
+
+  // 시트 4: 수익분석
+  const allTickers=[...new Set(S.transactions.map(t=>t.ticker))];
+  const h4=[['티커','종목명','통화','총매입(KRW)','총매도(KRW)','실현손익(KRW)','평가금액(KRW)','평가손익(KRW)','총손익(KRW)','수익률(%)']];
+  for (const ticker of allTickers.sort()) {
+    const h=holdings[ticker];
+    const txs=S.transactions.filter(t=>t.ticker===ticker);
+    const currency=txs[0]?.currency||'KRW';
+    let totalBuy=0,totalSell=0;
+    for(const tx of txs){const amt=toKRW(tx.qty*tx.price,tx.currency);if(tx.type==='buy')totalBuy+=amt;else totalSell+=amt;}
+    const realized=toKRW(h?.realizedPnl||0,currency);
+    const p=S.prices[ticker];
+    const cur=p?p.price:(h?.avgPrice||0);
+    const unrealized=h&&h.qty>0?toKRW((cur-h.avgPrice)*h.qty,h.currency):0;
+    const evalVal=h&&h.qty>0?toKRW(cur*h.qty,h.currency):0;
+    const totalPnl=realized+unrealized;
+    const pct=totalBuy>0?totalPnl/totalBuy*100:0;
+    h4.push([ticker,txs[0]?.name||'',currency,Math.round(totalBuy),Math.round(totalSell),Math.round(realized),Math.round(evalVal),Math.round(unrealized),Math.round(totalPnl),+pct.toFixed(2)]);
+  }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(h4), '수익분석');
+
+  const date=new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb, `포트폴리오_${date}.xlsx`);
+  toast('✅ Excel 파일 다운로드 완료');
 }
 
 // ════════════════════════════════════════════════════════════════
