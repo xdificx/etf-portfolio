@@ -2609,12 +2609,21 @@ function saveTickerMapEdit(name) {
 
 function deleteTickerMap(name) {
   if (!S.tickerMap) S.tickerMap = {};
-  // 사용자 매핑 제거 (내장 매핑만 있을 경우 내장값으로 복원됨)
   const hadUser = S.tickerMap[name] !== undefined;
   delete S.tickerMap[name];
   const builtinFallback = SAMSUNG_TICKER_MAP[name];
   if (_tmEditingName === name) _tmEditingName = null;
-  save();
+
+  // localStorage에 즉시 반영
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(S));
+
+  // Firebase: merge:true는 중첩 키 삭제를 반영하지 못함 → FieldValue.delete() 직접 사용
+  const ref = fbRef();
+  if (ref) {
+    ref.update({ [`tickerMap.${name}`]: firebase.firestore.FieldValue.delete() })
+      .catch(e => console.error('tickerMap delete error:', e));
+  }
+
   renderSettings();
   if (hadUser && builtinFallback) {
     toast(`↩ ${name} → 내장값 ${builtinFallback}으로 복원됨`);
