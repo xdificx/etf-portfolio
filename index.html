@@ -703,12 +703,46 @@ function tossSymbolToAppTicker(symbol, marketCountry){
 let _tossSyncing=false;
 let _tossPendingDiffs=[];
 let _tossPendingAcct='';
-async function syncTossHoldings(){
-  if(_tossSyncing){toast('동기화 진행 중...');return}
+
+// ────────────────────────────────────────────────────────────────
+// 자동 동기화 스케줄 (12:00, 20:00, 00:00)
+// ────────────────────────────────────────────────────────────────
+const AUTO_SYNC_SLOTS=[0,12,20]; // KST 기준 시각(시)
+const AUTO_SYNC_SLOT_KEY='toss_auto_sync_slot';
+
+function getCurrentSyncSlot(){
+  const now=new Date();
+  const h=now.getHours();
+  const dateStr=now.toISOString().slice(0,10);
+  // 오늘 지나온 슬롯 중 가장 최근
+  const passed=AUTO_SYNC_SLOTS.filter(s=>h>=s);
+  if(passed.length>0){
+    const slot=Math.max(...passed);
+    return `${dateStr}-${String(slot).padStart(2,'0')}`;
+  }
+  // 아직 00:00 슬롯도 안 됐으면 (이론상 불가하나 방어) → 어제 마지막 슬롯
+  const yesterday=new Date(now-86400000).toISOString().slice(0,10);
+  const lastSlot=Math.max(...AUTO_SYNC_SLOTS);
+  return `${yesterday}-${String(lastSlot).padStart(2,'0')}`;
+}
+
+async function autoSyncCheck(){
+  const currentSlot=getCurrentSyncSlot();
+  const lastSlot=localStorage.getItem(AUTO_SYNC_SLOT_KEY);
+  if(currentSlot===lastSlot)return; // 이미 이 슬롯에서 동기화 완료
+  localStorage.setItem(AUTO_SYNC_SLOT_KEY,currentSlot);
+  console.log(`[자동 동기화] 슬롯 ${currentSlot} 실행`);
+  // 가격 업데이트 (silent)
+  try{await fetchAllPrices(true);}catch(e){console.warn('autoSync fetchAllPrices 실패:',e);}
+  // Toss 잔고 동기화 (silent)
+  try{await syncTossHoldings(true);}catch(e){console.warn('autoSync syncTossHoldings 실패:',e);}
+}
+async function syncTossHoldings(silent=false){
+  if(_tossSyncing){if(!silent)toast('동기화 진행 중...');return}
   _tossSyncing=true;
   const btn=document.getElementById('toss-sync-btn');
   if(btn){btn.disabled=true;btn.textContent='동기화 중…';}
-  toast('🔄 토스증권 잔고 조회 중…');
+  if(!silent)toast('🔄 토스증권 잔고 조회 중…');
   try{
     const res=await fetch('/api/toss-holdings',{signal:AbortSignal.timeout(20000)});
     if(!res.ok){
@@ -764,12 +798,13 @@ async function syncTossHoldings(){
     save();renderAll();
 
     if(!diffs.length){
-      toast('✅ 토스증권 잔고 동기화 완료 — 수량 일치');
+      if(!silent)toast('✅ 토스증권 잔고 동기화 완료 — 수량 일치');
+      else toast('🔄 자동 동기화 완료',2000);
     } else {
       _tossPendingDiffs=diffs;
       _tossPendingAcct=tossAcctId;
       toast('⚠️ '+diffs.length+'개 종목 수량 불일치 — 확인 필요',3500);
-      showTossSyncModal(diffs,tossAcctId);
+      if(!silent)showTossSyncModal(diffs,tossAcctId);
     }
   }catch(e){
     console.error('toss-holdings error:',e);
@@ -3223,6 +3258,9 @@ updatePriceBar(false);
 setTimeout(()=>loadServerPrices(),500);
 // 1분마다 "몇 분 전" 텍스트 갱신
 setInterval(()=>updatePriceBar(false),60000);
+// 자동 동기화: 페이지 로드 시 + 1분 간격으로 슬롯 체크 (12:00, 20:00, 00:00)
+setTimeout(()=>autoSyncCheck(),3000);        // 페이지 로드 3초 후 첫 체크
+setInterval(()=>autoSyncCheck(),60000);      // 이후 1분마다 슬롯 변경 감지
 </script>
 </body>
 </html>
