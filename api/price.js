@@ -8,8 +8,8 @@
  * 국내/해외 주식·ETF → Toss Open API (Toss 미설정 시 Yahoo 폴백)
  *
  * 환경변수 (Vercel Dashboard > Settings > Environment Variables):
- *   TOSS_CLIENT_ID     — 토스증권 Open API client_id
- *   TOSS_CLIENT_SECRET — 토스증권 Open API client_secret
+ *   Toss_API_Key     — 토스증권 Open API client_id
+ *   Toss_Secret_Key — 토스증권 Open API client_secret
  */
 
 const TOSS_BASE = 'https://openapi.tossinvest.com';
@@ -58,9 +58,9 @@ async function getTossToken() {
     return cached;
   }
 
-  const clientId     = process.env.TOSS_CLIENT_ID;
-  const clientSecret = process.env.TOSS_CLIENT_SECRET;
-  if (!clientId || !clientSecret) throw new Error('TOSS_CLIENT_ID/SECRET 미설정');
+  const clientId     = process.env.Toss_API_Key;
+  const clientSecret = process.env.Toss_Secret_Key;
+  if (!clientId || !clientSecret) throw new Error('Toss_API_Key/SECRET 미설정');
 
   const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
   const res = await fetch(`${TOSS_BASE}/oauth2/token`, {
@@ -158,7 +158,7 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET')     return res.status(405).json({ error: 'Method not allowed' });
 
-  const hasToss = !!(process.env.TOSS_CLIENT_ID && process.env.TOSS_CLIENT_SECRET);
+  const hasToss = !!(process.env.Toss_API_Key && process.env.Toss_Secret_Key);
 
   // ── 환율 조회 모드 ────────────────────────────────────────────
   if (req.query.type === 'exchangerate') {
