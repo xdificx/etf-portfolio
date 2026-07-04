@@ -2465,6 +2465,8 @@ service cloud.firestore {
 // ════════════════════════════════════════════════════════════════
 let _tmSearch = '';
 let _tmShowBuiltin = false;
+let _tmEditingName = null;  // 현재 인라인 수정 중인 종목명
+let _tmAddingNew = false;   // 추가 폼 표시 여부
 
 function renderTickerMapCard() {
   if (!S.tickerMap) S.tickerMap = {};
@@ -2501,8 +2503,25 @@ function renderTickerMapCard() {
     const source = isUser
       ? `<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:rgba(16,185,129,.15);color:var(--green);font-weight:600">${overridden ? '덮어쓰기' : '사용자'}</span>`
       : `<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:rgba(100,116,139,.12);color:var(--muted);font-weight:600">내장</span>`;
+
+    // 인라인 수정 모드
+    if (isUser && _tmEditingName === name) {
+      return `<tr style="background:rgba(99,102,241,.06)">
+        <td style="font-size:13px">${esc(name)}</td>
+        <td><input id="tm-edit-input" type="text" value="${esc(ticker)}"
+          style="width:130px;font-size:13px;padding:4px 8px;border-radius:6px;border:1.5px solid var(--accent);background:var(--bg2);color:var(--fg)"
+          onkeydown="if(event.key==='Enter')saveTickerMapEdit(${JSON.stringify(name)});if(event.key==='Escape')cancelTickerMapEdit()">
+        </td>
+        <td>${source}</td>
+        <td style="white-space:nowrap">
+          <button class="btn-xs" style="background:var(--accent);color:#fff;border:none;margin-right:4px" onclick="saveTickerMapEdit(${JSON.stringify(name)})">저장</button>
+          <button class="btn-xs btn-ghost" onclick="cancelTickerMapEdit()">취소</button>
+        </td>
+      </tr>`;
+    }
+
     const actions = isUser
-      ? `<button class="btn-xs" style="background:rgba(99,102,241,.15);color:var(--accent);border:none;margin-right:4px" onclick="editTickerMap(${JSON.stringify(name)})">수정</button>
+      ? `<button class="btn-xs" style="background:rgba(99,102,241,.15);color:var(--accent);border:none;margin-right:4px" onclick="startEditTickerMap(${JSON.stringify(name)})">수정</button>
          <button class="btn-xs btn-del" onclick="deleteTickerMap(${JSON.stringify(name)})">삭제</button>`
       : `<span style="font-size:11px;color:var(--muted)">읽기 전용</span>`;
     return `<tr>
@@ -2513,32 +2532,50 @@ function renderTickerMapCard() {
     </tr>`;
   }).join('');
 
+  // 새로 추가 인라인 폼
+  const addRow = _tmAddingNew ? `<tr style="background:rgba(16,185,129,.06)">
+    <td><input id="tm-new-name" type="text" placeholder="종목명"
+      style="width:160px;font-size:13px;padding:4px 8px;border-radius:6px;border:1.5px solid var(--green);background:var(--bg2);color:var(--fg)"
+      onkeydown="if(event.key==='Tab'){event.preventDefault();document.getElementById('tm-new-ticker').focus();}if(event.key==='Enter')saveNewTickerMap();if(event.key==='Escape')cancelAddTickerMap()">
+    </td>
+    <td><input id="tm-new-ticker" type="text" placeholder="티커 (예: 379800.KS)"
+      style="width:130px;font-size:13px;padding:4px 8px;border-radius:6px;border:1.5px solid var(--green);background:var(--bg2);color:var(--fg)"
+      onkeydown="if(event.key==='Enter')saveNewTickerMap();if(event.key==='Escape')cancelAddTickerMap()">
+    </td>
+    <td><span style="font-size:10px;padding:1px 7px;border-radius:10px;background:rgba(16,185,129,.15);color:var(--green);font-weight:600">사용자</span></td>
+    <td style="white-space:nowrap">
+      <button class="btn-xs" style="background:var(--green);color:#fff;border:none;margin-right:4px" onclick="saveNewTickerMap()">추가</button>
+      <button class="btn-xs btn-ghost" onclick="cancelAddTickerMap()">취소</button>
+    </td>
+  </tr>` : '';
+
+  const tableBody = addRow + rows;
+  const showTable = tableBody || _tmAddingNew;
+
   return `<div class="card">
     <div class="row-between" style="margin-bottom:12px">
       <div>
         <div class="sec-title" style="margin:0">🔗 종목명 ↔ 티커 매핑 관리</div>
         <div style="font-size:12px;color:var(--muted);margin-top:3px">사용자 등록 ${userCount}개 · 내장 ${builtinCount}개</div>
       </div>
-      <button class="btn btn-ghost" onclick="addTickerMap()" style="font-size:12px;white-space:nowrap">+ 직접 추가</button>
+      <button class="btn btn-ghost" onclick="showAddTickerForm()" style="font-size:12px;white-space:nowrap">+ 직접 추가</button>
     </div>
 
     <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center">
       <input type="text" placeholder="종목명 또는 티커로 검색…" value="${esc(_tmSearch)}"
-        oninput="_tmSearch=this.value;document.getElementById('tm-card').outerHTML=renderTickerMapCard();_reattachTmCard()"
+        oninput="_tmSearch=this.value;renderSettings()"
         style="flex:1;font-size:13px;padding:7px 10px">
       <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap">
-        <input type="checkbox" ${_tmShowBuiltin?'checked':''} onchange="_tmShowBuiltin=this.checked;_reattachTmCard()"> 내장 매핑 보기
+        <input type="checkbox" ${_tmShowBuiltin?'checked':''} onchange="_tmShowBuiltin=this.checked;renderSettings()"> 내장 매핑 보기
       </label>
     </div>
 
-    <div id="tm-card">
-    ${!filtered.length
+    ${(!filtered.length && !_tmAddingNew)
       ? `<div class="empty" style="padding:20px 0">검색 결과가 없습니다</div>`
       : `<div class="tbl-wrap"><table class="tbl">
           <thead><tr><th>종목명</th><th>티커</th><th>출처</th><th>관리</th></tr></thead>
-          <tbody>${rows}</tbody>
+          <tbody>${tableBody}</tbody>
         </table></div>`}
-    </div>
 
     ${userCount ? `<div style="margin-top:10px;text-align:right">
       <button class="btn-xs btn-del" style="padding:6px 10px;border-radius:8px" onclick="clearAllUserTickerMap()">사용자 매핑 전체 삭제</button>
@@ -2546,47 +2583,74 @@ function renderTickerMapCard() {
   </div>`;
 }
 
-function _reattachTmCard() {
-  // 검색/토글 변경 시 카드만 부분 재렌더
-  const wrap = document.getElementById('tab-settings');
-  if (!wrap) return;
-  const newCard = renderTickerMapCard();
-  // renderSettings 전체 재호출이 가장 단순
+function _reattachTmCard() { renderSettings(); }
+
+// 추가 폼 표시
+function showAddTickerForm() {
+  _tmAddingNew = true;
+  _tmEditingName = null;
+  renderSettings();
+  setTimeout(() => { const el = document.getElementById('tm-new-name'); if (el) el.focus(); }, 50);
+}
+
+function cancelAddTickerMap() {
+  _tmAddingNew = false;
   renderSettings();
 }
 
-function addTickerMap() {
-  const name = prompt('종목명을 입력하세요\n예) KODEX 미국나스닥100');
-  if (!name || !name.trim()) return;
-  const existing = lookupTicker(name.trim());
-  const ticker = prompt(`티커를 입력하세요\n예) 379800.KS`, existing || '');
-  if (!ticker || !ticker.trim()) return;
-  learnTicker(name.trim(), ticker.trim().toUpperCase());
+function saveNewTickerMap() {
+  const nameEl = document.getElementById('tm-new-name');
+  const tickerEl = document.getElementById('tm-new-ticker');
+  if (!nameEl || !tickerEl) return;
+  const name = nameEl.value.trim();
+  const ticker = tickerEl.value.trim().toUpperCase();
+  if (!name) { toast('⚠️ 종목명을 입력하세요'); nameEl.focus(); return; }
+  if (!ticker) { toast('⚠️ 티커를 입력하세요'); tickerEl.focus(); return; }
+  learnTicker(name, ticker);
+  _tmAddingNew = false;
   renderSettings();
-  toast(`✅ 매핑 추가: ${name.trim()} → ${ticker.trim().toUpperCase()}`);
+  toast(`✅ 매핑 추가: ${name} → ${ticker}`);
 }
 
-function editTickerMap(name) {
-  const current = S.tickerMap[name] || '';
-  const ticker = prompt(`[${name}] 티커 수정`, current);
-  if (ticker === null) return;
-  if (!ticker.trim()) { deleteTickerMap(name); return; }
-  learnTicker(name, ticker.trim().toUpperCase());
+// 인라인 수정
+function startEditTickerMap(name) {
+  _tmEditingName = name;
+  _tmAddingNew = false;
   renderSettings();
-  toast(`✅ 수정됨: ${name} → ${ticker.trim().toUpperCase()}`);
+  setTimeout(() => {
+    const el = document.getElementById('tm-edit-input');
+    if (el) { el.focus(); el.select(); }
+  }, 50);
+}
+
+function cancelTickerMapEdit() {
+  _tmEditingName = null;
+  renderSettings();
+}
+
+function saveTickerMapEdit(name) {
+  const el = document.getElementById('tm-edit-input');
+  if (!el) return;
+  const ticker = el.value.trim().toUpperCase();
+  if (!ticker) { deleteTickerMap(name); return; }
+  learnTicker(name, ticker);
+  _tmEditingName = null;
+  renderSettings();
+  toast(`✅ 수정됨: ${name} → ${ticker}`);
 }
 
 function deleteTickerMap(name) {
-  if (!confirm(`[${name}] 매핑을 삭제하시겠습니까?\n내장 매핑이 있으면 내장값으로 복원됩니다.`)) return;
   if (S.tickerMap) delete S.tickerMap[name];
+  if (_tmEditingName === name) _tmEditingName = null;
   save();
   renderSettings();
   toast(`🗑 삭제됨: ${name}`);
 }
 
 function clearAllUserTickerMap() {
-  if (!confirm('사용자가 등록한 모든 티커 매핑을 삭제하시겠습니까?')) return;
   S.tickerMap = {};
+  _tmEditingName = null;
+  _tmAddingNew = false;
   save();
   renderSettings();
   toast('🗑 사용자 매핑 전체 삭제됨');
