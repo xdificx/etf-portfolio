@@ -90,6 +90,18 @@
     .fb-step{background:var(--card2);border-radius:8px;padding:12px 14px;margin-bottom:8px;font-size:13px;line-height:1.7}
     .fb-step strong{color:var(--accent)}
 
+    /* ── 엑셀 가져오기 ── */
+    .import-modal{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:3000;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto}
+    .import-box{background:var(--card);border:1px solid var(--border);border-radius:14px;width:100%;max-width:860px;padding:20px}
+    .import-preview{max-height:380px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;margin:12px 0}
+    .import-row-skip{opacity:.4}
+    .import-summary{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+    .import-sum-chip{background:var(--card2);border-radius:8px;padding:8px 14px;font-size:13px}
+    .import-sum-chip strong{display:block;font-size:18px;font-weight:700}
+    .ticker-input{width:110px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 7px;font-size:12px}
+    .ticker-input.ok{border-color:var(--green)}
+    .ticker-input.missing{border-color:var(--yellow)}
+
     /* ── 모으기(DCA) ── */
     .dca-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px}
     .dca-card-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px}
@@ -351,6 +363,7 @@ const mkState=()=>({
   dividends:[],       // 수동 입력 [{id,ticker,name,exDate,payDate,amtPerShare,currency,received}]
   history:[],         // [{date,totalVal,totalCost,kospi,sp500}]
   dcaPlans:[],        // [{id,ticker,name,currency,assetType,account,amount,frequency,dayOfWeek,startDate,endDate,active}]
+  tickerMap:{},       // {종목명: ticker} — 자동 학습 매핑
   prices:{},
   settings:{manualRate:null}
 });
@@ -985,6 +998,308 @@ function renderHoldings(){
 // ════════════════════════════════════════════════════════════════
 // RENDER — TRANSACTIONS
 // ════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════
+// 삼성증권 XLSX 가져오기
+// ════════════════════════════════════════════════════════════════
+
+// 종목명 → 티커 자동 매핑 (주요 ETF/주식)
+const SAMSUNG_TICKER_MAP = {
+  '삼성전자':'005930.KS','삼성전자우':'005935.KS','SK하이닉스':'000660.KS',
+  'KODEX 200':'069500.KS','KODEX 코스닥150':'229200.KS','KODEX 코스피':'226490.KS',
+  'TIGER 미국S&P500':'360750.KS','TIGER 미국배당다우존스':'458730.KS',
+  'KODEX 미국나스닥100':'379800.KS','KODEX 미국S&P500TR':'379810.KS',
+  'KODEX 미국S&P500데일리커버드콜OTM':'473200.KS',
+  'KODEX 미국나스닥100데일리커버드콜OTM':'472160.KS',
+  'KODEX 미국성장커버드콜액티브':'480620.KS',
+  'RISE 미국테크100데일리고정커버드콜':'476760.KS',
+  'TIGER 미국배당다우존스':'458730.KS',
+  'KODEX 미국배당다우존스타겟커버드콜':'489820.KS',
+  'TIGER 미국테크TOP10 INDXX':'381180.KS',
+  'TIGER 미국필라델피아반도체나스닥':'381170.KS',
+  'TIGER 미국AI데이터센터TOP4Plus':'481100.KS',
+  'TIGER 글로벌AI&로보틱스 INDXX':'448290.KS',
+  'TIGER 미국우주테크':'489700.KS',
+  'KODEX 미국우주항공':'476720.KS',
+  'KODEX 방산TOP10':'476090.KS',
+  'KODEX AI전력핵심설비':'475080.KS',
+  'HANARO 미국AI메모리반도체TOP4+':'480030.KS',
+  'PLUS 글로벌HBM반도체':'479570.KS',
+  'KIWOOM 미국S&P500모멘텀':'476620.KS',
+  'KoAct 미국나스닥성장기업액티브':'476600.KS',
+  'TIGER KRX금현물':'411060.KS',
+  'KODEX 삼성그룹':'102960.KS',
+  'KODEX 삼성전자SK하이닉스채권혼합50':'480090.KS',
+  'WON 두산그룹포커스':'476730.KS',
+  'PLUS 한화그룹주':'475320.KS',
+  'RISE 현대차고정피지컬AI':'489790.KS',
+  '현대차':'005380.KS','미래에셋증권':'006800.KS',
+  'SK네트웍스':'001740.KS','SK증권':'001510.KS',
+  '포스코인터내셔널':'047050.KS','한화솔루션':'009830.KS',
+  'HD현대에너지솔루션':'322000.KS',
+};
+
+// ── 티커 매핑 헬퍼 ─────────────────────────────────────────────
+// 우선순위: 사용자 학습 > 내장 사전
+function lookupTicker(name) {
+  if (!name) return '';
+  return (S.tickerMap && S.tickerMap[name]) || SAMSUNG_TICKER_MAP[name] || '';
+}
+
+// 이름 + 티커가 모두 있으면 자동 저장
+function learnTicker(name, ticker) {
+  if (!name || !ticker) return;
+  if (!S.tickerMap) S.tickerMap = {};
+  if (S.tickerMap[name] === ticker) return; // 이미 동일
+  S.tickerMap[name] = ticker.toUpperCase();
+  save();
+}
+
+// 모든 매핑 소스 합쳐서 반환 (자동완성용)
+function allTickerMap() {
+  return Object.assign({}, SAMSUNG_TICKER_MAP, S.tickerMap || {});
+}
+
+// 이름으로 자동완성 후보 반환 (최대 8개)
+function suggestByName(query) {
+  if (!query || query.length < 1) return [];
+  const q = query.toLowerCase();
+  const map = allTickerMap();
+  return Object.entries(map)
+    .filter(([n]) => n.toLowerCase().includes(q))
+    .slice(0, 8);
+}
+
+// 티커로 이름 역조회
+function lookupName(ticker) {
+  const map = allTickerMap();
+  return Object.entries(map).find(([, t]) => t === ticker)?.[0] || '';
+}
+
+// ── ETF 이름 포함 여부로 assetType 추론
+function guessAssetType(name) {
+  if (!name) return 'stock';
+  const etfPrefixes = ['KODEX','TIGER','RISE','HANARO','PLUS','KIWOOM','KoAct','WON','ACE','ARIRANG','SOL','KOSEF','TIMEFOLIO','FOCUS'];
+  return etfPrefixes.some(p => name.startsWith(p)) ? 'etf' : 'stock';
+}
+
+// 숫자 문자열 → 숫자 (콤마 제거)
+function parseNum(v) {
+  if (v === null || v === undefined || v === '') return 0;
+  return parseFloat(String(v).replace(/,/g, '')) || 0;
+}
+
+let _importParsed = null; // 파싱 결과 임시 저장
+
+function openImportModal() {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = '.xlsx,.xls';
+  input.onchange = e => {
+    const file = e.target.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: 'array', cellDates: true });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false });
+        _importParsed = parseSamsungRows(rows);
+        showImportModal();
+      } catch(e) { toast('⚠️ 파일 읽기 실패: ' + e.message); }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+  input.click();
+}
+
+function parseSamsungRows(rows) {
+  // 헤더 행 찾기 (거래일자 포함 행)
+  let headerIdx = rows.findIndex(r => r[0] === '거래일자');
+  if (headerIdx < 0) headerIdx = 1;
+  const header = rows[headerIdx];
+  const colIdx = k => header.indexOf(k);
+  const C = {
+    date: colIdx('거래일자'), type: colIdx('거래명'),
+    qty: colIdx('거래수량'), amount: colIdx('거래금액'),
+    name: colIdx('종목명'), price: colIdx('거래단가'),
+    fee: colIdx('수수료/Fee'), currency: colIdx('통화코드'),
+    settle: colIdx('정산금액'),
+  };
+
+  const txTypes = new Set(['매수','매수_NXT','매도','매도_NXT']);
+  const cashTypes = new Set(['이체입금','이체출금','ISA개설 지원금 입금','이용료입금','이용료출금','배당금출금']);
+  const divTypes = new Set(['배당금입금']);
+
+  const transactions = [], cashflows = [], dividends = [], skipped = [];
+  // 종목명별 티커 매핑 수집 (자동 + 미확인)
+  const nameMap = {}; // {종목명: ticker|null}
+
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r[C.date] || !r[C.type]) continue;
+    const date = String(r[C.date]).slice(0, 10);
+    const type = String(r[C.type]).trim();
+    const stockName = r[C.name] ? String(r[C.name]).trim() : null;
+    const qty = parseNum(r[C.qty]);
+    const amount = parseNum(r[C.amount]);
+    const price = parseNum(r[C.price]);
+    const fee = parseNum(r[C.fee]);
+
+    if (txTypes.has(type)) {
+      const isBuy = type === '매수' || type === '매수_NXT';
+      if (!nameMap[stockName]) nameMap[stockName] = SAMSUNG_TICKER_MAP[stockName] || null;
+      transactions.push({ date, type: isBuy ? 'buy' : 'sell', name: stockName, qty, price, fee, amount, _idx: i });
+    } else if (divTypes.has(type)) {
+      if (stockName && !nameMap[stockName]) nameMap[stockName] = SAMSUNG_TICKER_MAP[stockName] || null;
+      dividends.push({ date, name: stockName, amount, _idx: i });
+    } else if (cashTypes.has(type)) {
+      const isDeposit = type.includes('입금');
+      cashflows.push({ date, type: isDeposit ? 'deposit' : 'withdraw', amount: Math.abs(amount), memo: type, _idx: i });
+    } else {
+      skipped.push({ date, type, amount, _idx: i });
+    }
+  }
+
+  return { transactions, cashflows, dividends, skipped, nameMap };
+}
+
+function showImportModal() {
+  const p = _importParsed;
+  if (!p) return;
+
+  // 중복 감지 (날짜+종목명+수량 기준)
+  const existingKeys = new Set(S.transactions.map(t => t.date + '|' + t.name + '|' + t.qty));
+
+  const missingTickers = Object.entries(p.nameMap).filter(([,v]) => !v).map(([k]) => k);
+
+  // 티커 매핑 입력 UI
+  const mapUI = missingTickers.length
+    ? '<div class="card" style="margin-bottom:12px"><div class="sec-title" style="margin-bottom:8px">⚠️ 티커 입력 필요 (' + missingTickers.length + '개)</div>'
+      + '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">아래 종목의 티커를 직접 입력하세요. 비워두면 종목명으로 저장됩니다.</div>'
+      + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'
+      + missingTickers.map(n =>
+          '<div style="display:flex;align-items:center;gap:8px;font-size:12px">'
+          + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + n + '">' + n + '</span>'
+          + '<input class="ticker-input missing" id="imp-ticker-' + encodeURIComponent(n) + '" placeholder="069500.KS" oninput="impTickerChange(this,\'' + n.replace(/'/g,"\\'") + '\')">'
+          + '</div>'
+        ).join('')
+      + '</div></div>'
+    : '';
+
+  // 거래 미리보기 (최대 50행)
+  const preview = p.transactions.slice(0, 50).map(tx => {
+    const isDup = existingKeys.has(tx.date + '|' + tx.name + '|' + tx.qty);
+    const ticker = p.nameMap[tx.name] || '';
+    return '<tr class="' + (isDup ? 'import-row-skip' : '') + '">'
+      + '<td>' + tx.date + '</td>'
+      + '<td><span class="badge badge-' + tx.type + '">' + (tx.type==='buy'?'매수':'매도') + '</span></td>'
+      + '<td>' + (tx.name||'-') + '</td>'
+      + '<td style="font-size:11px;color:var(--accent)">' + (ticker||'<span style="color:var(--yellow)">티커없음</span>') + '</td>'
+      + '<td style="text-align:right">' + tx.qty + '</td>'
+      + '<td style="text-align:right">' + Math.round(tx.price).toLocaleString() + '</td>'
+      + '<td style="text-align:right">' + Math.round(tx.fee).toLocaleString() + '</td>'
+      + '<td style="color:var(--muted);font-size:11px">' + (isDup?'⚠️중복':'') + '</td>'
+    + '</tr>';
+  }).join('');
+
+  const acctOpts = (S.accounts||[]).map(a => '<option value="' + a.id + '">' + a.name + '</option>').join('');
+  const dupCount = p.transactions.filter(tx => existingKeys.has(tx.date + '|' + tx.name + '|' + tx.qty)).length;
+
+  const modal = document.createElement('div');
+  modal.className = 'import-modal'; modal.id = 'import-modal';
+  modal.innerHTML = '<div class="import-box">'
+    + '<div class="row-between" style="margin-bottom:14px">'
+      + '<div style="font-size:16px;font-weight:700">📥 삼성증권 거래내역 가져오기</div>'
+      + '<button onclick="closeImportModal()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer">✕</button>'
+    + '</div>'
+    + '<div class="import-summary">'
+      + '<div class="import-sum-chip"><strong class="pos">' + p.transactions.length + '</strong>매수/매도</div>'
+      + '<div class="import-sum-chip"><strong style="color:var(--accent)">' + p.dividends.length + '</strong>배당금</div>'
+      + '<div class="import-sum-chip"><strong style="color:var(--yellow)">' + p.cashflows.length + '</strong>입출금</div>'
+      + (dupCount ? '<div class="import-sum-chip"><strong class="neg">' + dupCount + '</strong>중복(건너뜀)</div>' : '')
+    + '</div>'
+    + '<div class="form-row" style="margin-bottom:12px">'
+      + '<div class="fg fg-md"><label>가져올 계좌</label><select id="imp-account">' + acctOpts + '</select></div>'
+      + '<div class="fg" style="flex:0 0 auto;justify-content:flex-end;display:flex;align-items:flex-end">'
+        + '<label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">'
+          + '<input type="checkbox" id="imp-skip-dup" checked> 중복 건너뛰기'
+        + '</label>'
+      + '</div>'
+    + '</div>'
+    + mapUI
+    + '<div style="font-weight:600;font-size:13px;margin-bottom:6px">매수/매도 미리보기 (최대 50건)</div>'
+    + '<div class="import-preview"><table class="tbl"><thead><tr>'
+      + '<th>날짜</th><th>구분</th><th>종목명</th><th>티커</th><th>수량</th><th>단가</th><th>수수료</th><th></th>'
+    + '</tr></thead><tbody>' + preview + '</tbody></table></div>'
+    + '<div class="btn-row" style="margin-top:14px">'
+      + '<button class="btn btn-primary" onclick="confirmImport()">가져오기 실행</button>'
+      + '<button class="btn btn-ghost" onclick="closeImportModal()">취소</button>'
+    + '</div>'
+  + '</div>';
+
+  document.body.appendChild(modal);
+}
+
+function impTickerChange(input, name) {
+  if (_importParsed) _importParsed.nameMap[name] = input.value.toUpperCase().trim() || null;
+  input.className = 'ticker-input ' + (input.value.trim() ? 'ok' : 'missing');
+  input.value = input.value.toUpperCase();
+}
+
+function closeImportModal() {
+  const m = document.getElementById('import-modal');
+  if (m) m.remove();
+}
+
+function confirmImport() {
+  const p = _importParsed; if (!p) return;
+  const account = document.getElementById('imp-account')?.value || (S.accounts[0]?.id || 'samsung');
+  const skipDup = document.getElementById('imp-skip-dup')?.checked !== false;
+  const existingKeys = new Set(S.transactions.map(t => t.date + '|' + t.name + '|' + t.qty));
+  const existingCfKeys = new Set(S.cashflows.map(c => c.date + '|' + c.memo + '|' + c.amount));
+  const existingDivKeys = new Set((S.dividends||[]).map(d => d.exDate + '|' + d.name + '|' + d.amtPerShare));
+
+  let txAdded = 0, cfAdded = 0, divAdded = 0;
+
+  // 거래내역 (매수/매도)
+  for (const tx of p.transactions) {
+    const key = tx.date + '|' + tx.name + '|' + tx.qty;
+    if (skipDup && existingKeys.has(key)) continue;
+    const ticker = (p.nameMap[tx.name] || '').toUpperCase() || tx.name;
+    S.transactions.push({
+      id: uid(), date: tx.date, type: tx.type,
+      ticker, name: tx.name || ticker,
+      assetType: guessAssetType(tx.name),
+      qty: tx.qty, price: tx.price, fee: tx.fee,
+      currency: 'KRW', account,
+    });
+    txAdded++;
+  }
+
+  // 입출금 (현금흐름)
+  for (const cf of p.cashflows) {
+    const key = cf.date + '|' + cf.memo + '|' + cf.amount;
+    if (skipDup && existingCfKeys.has(key)) continue;
+    S.cashflows.push({ id: uid(), date: cf.date, type: cf.type, amount: cf.amount, currency: 'KRW', account, memo: cf.memo });
+    cfAdded++;
+  }
+
+  // 배당금
+  if (!S.dividends) S.dividends = [];
+  for (const dv of p.dividends) {
+    const key = dv.date + '|' + dv.name + '|' + dv.amount;
+    if (skipDup && existingDivKeys.has(key)) continue;
+    const ticker = (p.nameMap[dv.name] || '').toUpperCase() || dv.name;
+    S.dividends.push({
+      id: uid(), ticker, name: dv.name || ticker,
+      exDate: dv.date, payDate: dv.date,
+      amtPerShare: dv.amount, sharesHeld: 1, currency: 'KRW', received: true,
+    });
+    divAdded++;
+  }
+
+  save(); closeImportModal(); renderTransactions();
+  toast('✅ 가져오기 완료 — 거래 ' + txAdded + '건 · 입출금 ' + cfAdded + '건 · 배당 ' + divAdded + '건');
+}
+
 function renderTransactions(){
   const acctOpts=(S.accounts||[]).map(a=>`<option value="${a.id}">${a.name}</option>`).join('');
   const filtered=_acctFilter
@@ -1032,6 +1347,15 @@ function renderTransactions(){
         <div class="fg" style="flex:0 0 auto"><label>&nbsp;</label><button class="btn btn-primary" onclick="addTx()">추가</button></div>
       </div>
       <div style="font-size:12px;color:var(--muted)">💡 코스피 <code>.KS</code> / 코스닥 <code>.KQ</code> / 미국 영문 그대로</div>
+    </div>
+    <div class="card" style="background:rgba(99,102,241,.06);border-color:rgba(99,102,241,.3)">
+      <div class="row-between">
+        <div>
+          <div style="font-weight:600;margin-bottom:2px">📥 삼성증권 거래내역 가져오기</div>
+          <div style="font-size:12px;color:var(--muted)">삼성증권에서 다운받은 .xlsx 파일을 업로드하면 매수/매도·배당금·입출금을 자동으로 가져옵니다.</div>
+        </div>
+        <button class="btn btn-primary" onclick="openImportModal()" style="white-space:nowrap;flex-shrink:0">파일 선택</button>
+      </div>
     </div>
     <div class="card">
       <div class="sec-title">거래 내역 (${txs.length}건)</div>
