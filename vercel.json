@@ -4,6 +4,9 @@
     "api/price.js": {
       "maxDuration": 15
     },
+    "api/toss-holdings.js": {
+      "maxDuration": 20
+    },
     "api/dividends.js": {
       "maxDuration": 30
     }
