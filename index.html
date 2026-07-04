@@ -2455,7 +2455,141 @@ service cloud.firestore {
           <tr><td>지수 (조회용)</td><td>^티커</td><td>^KS11 (KOSPI), ^GSPC (S&P500)</td></tr>
         </tbody>
       </table>
-    </div>`;
+    </div>
+
+    ${renderTickerMapCard()}`;
+}
+
+// ════════════════════════════════════════════════════════════════
+// TICKER MAP MANAGEMENT
+// ════════════════════════════════════════════════════════════════
+let _tmSearch = '';
+let _tmShowBuiltin = false;
+
+function renderTickerMapCard() {
+  if (!S.tickerMap) S.tickerMap = {};
+  const userMap = S.tickerMap;
+  const builtinMap = SAMSUNG_TICKER_MAP;
+
+  // 모든 매핑 수집 (출처 표시용)
+  const allNames = new Set([
+    ...(_tmShowBuiltin ? Object.keys(builtinMap) : []),
+    ...Object.keys(userMap),
+  ]);
+
+  // 검색 필터
+  const q = _tmSearch.toLowerCase();
+  const filtered = [...allNames].filter(name => {
+    if (!q) return true;
+    const ticker = userMap[name] || builtinMap[name] || '';
+    return name.toLowerCase().includes(q) || ticker.toLowerCase().includes(q);
+  }).sort((a, b) => {
+    // 사용자 매핑 우선, 그 다음 가나다순
+    const aUser = !!userMap[a], bUser = !!userMap[b];
+    if (aUser !== bUser) return bUser ? 1 : -1;
+    return a.localeCompare(b, 'ko');
+  });
+
+  const userCount = Object.keys(userMap).length;
+  const builtinCount = Object.keys(builtinMap).length;
+
+  const rows = filtered.map(name => {
+    const isUser = !!userMap[name];
+    const isBuiltin = !!builtinMap[name];
+    const ticker = userMap[name] || builtinMap[name] || '';
+    const overridden = isUser && isBuiltin;
+    const source = isUser
+      ? `<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:rgba(16,185,129,.15);color:var(--green);font-weight:600">${overridden ? '덮어쓰기' : '사용자'}</span>`
+      : `<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:rgba(100,116,139,.12);color:var(--muted);font-weight:600">내장</span>`;
+    const actions = isUser
+      ? `<button class="btn-xs" style="background:rgba(99,102,241,.15);color:var(--accent);border:none;margin-right:4px" onclick="editTickerMap(${JSON.stringify(name)})">수정</button>
+         <button class="btn-xs btn-del" onclick="deleteTickerMap(${JSON.stringify(name)})">삭제</button>`
+      : `<span style="font-size:11px;color:var(--muted)">읽기 전용</span>`;
+    return `<tr>
+      <td style="font-size:13px">${esc(name)}</td>
+      <td><code style="font-size:12px;background:rgba(99,102,241,.1);padding:2px 6px;border-radius:5px">${esc(ticker)}</code></td>
+      <td>${source}</td>
+      <td style="white-space:nowrap">${actions}</td>
+    </tr>`;
+  }).join('');
+
+  return `<div class="card">
+    <div class="row-between" style="margin-bottom:12px">
+      <div>
+        <div class="sec-title" style="margin:0">🔗 종목명 ↔ 티커 매핑 관리</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:3px">사용자 등록 ${userCount}개 · 내장 ${builtinCount}개</div>
+      </div>
+      <button class="btn btn-ghost" onclick="addTickerMap()" style="font-size:12px;white-space:nowrap">+ 직접 추가</button>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center">
+      <input type="text" placeholder="종목명 또는 티커로 검색…" value="${esc(_tmSearch)}"
+        oninput="_tmSearch=this.value;document.getElementById('tm-card').outerHTML=renderTickerMapCard();_reattachTmCard()"
+        style="flex:1;font-size:13px;padding:7px 10px">
+      <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap">
+        <input type="checkbox" ${_tmShowBuiltin?'checked':''} onchange="_tmShowBuiltin=this.checked;_reattachTmCard()"> 내장 매핑 보기
+      </label>
+    </div>
+
+    <div id="tm-card">
+    ${!filtered.length
+      ? `<div class="empty" style="padding:20px 0">검색 결과가 없습니다</div>`
+      : `<div class="tbl-wrap"><table class="tbl">
+          <thead><tr><th>종목명</th><th>티커</th><th>출처</th><th>관리</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>`}
+    </div>
+
+    ${userCount ? `<div style="margin-top:10px;text-align:right">
+      <button class="btn-xs btn-del" style="padding:6px 10px;border-radius:8px" onclick="clearAllUserTickerMap()">사용자 매핑 전체 삭제</button>
+    </div>` : ''}
+  </div>`;
+}
+
+function _reattachTmCard() {
+  // 검색/토글 변경 시 카드만 부분 재렌더
+  const wrap = document.getElementById('tab-settings');
+  if (!wrap) return;
+  const newCard = renderTickerMapCard();
+  // renderSettings 전체 재호출이 가장 단순
+  renderSettings();
+}
+
+function addTickerMap() {
+  const name = prompt('종목명을 입력하세요\n예) KODEX 미국나스닥100');
+  if (!name || !name.trim()) return;
+  const existing = lookupTicker(name.trim());
+  const ticker = prompt(`티커를 입력하세요\n예) 379800.KS`, existing || '');
+  if (!ticker || !ticker.trim()) return;
+  learnTicker(name.trim(), ticker.trim().toUpperCase());
+  renderSettings();
+  toast(`✅ 매핑 추가: ${name.trim()} → ${ticker.trim().toUpperCase()}`);
+}
+
+function editTickerMap(name) {
+  const current = S.tickerMap[name] || '';
+  const ticker = prompt(`[${name}] 티커 수정`, current);
+  if (ticker === null) return;
+  if (!ticker.trim()) { deleteTickerMap(name); return; }
+  learnTicker(name, ticker.trim().toUpperCase());
+  renderSettings();
+  toast(`✅ 수정됨: ${name} → ${ticker.trim().toUpperCase()}`);
+}
+
+function deleteTickerMap(name) {
+  if (!confirm(`[${name}] 매핑을 삭제하시겠습니까?\n내장 매핑이 있으면 내장값으로 복원됩니다.`)) return;
+  if (S.tickerMap) delete S.tickerMap[name];
+  save();
+  renderSettings();
+  toast(`🗑 삭제됨: ${name}`);
+}
+
+function clearAllUserTickerMap() {
+  if (!confirm('사용자가 등록한 모든 티커 매핑을 삭제하시겠습니까?')) return;
+  S.tickerMap = {};
+  save();
+  renderSettings();
+  toast('🗑 사용자 매핑 전체 삭제됨');
 }
 
 // ════════════════════════════════════════════════════════════════
