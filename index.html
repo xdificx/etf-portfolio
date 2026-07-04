@@ -1315,6 +1315,10 @@ function confirmImport() {
   toast('✅ 가져오기 완료 — 거래 ' + txAdded + '건 · 입출금 ' + cfAdded + '건 · 배당 ' + divAdded + '건');
 }
 
+let _txViewMode = 'monthly'; // 'monthly' | 'all'
+
+function setTxViewMode(mode){_txViewMode=mode;renderTransactions();}
+
 function renderTransactions(){
   const acctOpts=(S.accounts||[]).map(a=>`<option value="${a.id}">${a.name}</option>`).join('');
   const filtered=_acctFilter
@@ -1322,26 +1326,90 @@ function renderTransactions(){
     :S.transactions;
   const txs=[...filtered].sort((a,b)=>b.date!==a.date?b.date.localeCompare(a.date):b.id.localeCompare(a.id));
   const today=todayStr();
-  let rows='';
-  for(const tx of txs){
+
+  // ── 거래내역 본문 생성 ──────────────────────────────────────────
+  function txRow(tx){
     const qtyStr=tx.qty%1===0?tx.qty.toLocaleString():tx.qty.toFixed(4);
     const acct=S.accounts.find(a=>a.id===tx.account)||{name:tx.account||'-',color:'#64748b'};
-    rows+=`<tr>
+    return `<tr>
       <td class="muted">${tx.date}</td>
       <td><span style="font-size:10px;padding:1px 6px;border-radius:10px;background:${acct.color}22;color:${acct.color};font-weight:600">${esc(acct.name)}</span></td>
       <td><span class="badge badge-${tx.type}">${tx.type==='buy'?'매수':'매도'}</span></td>
       <td><div style="font-weight:600">${esc(tx.ticker)}</div>
           <div style="font-size:11px;color:var(--muted)">${esc(tx.name)}</div></td>
-      <td>${qtyStr}</td>
-      <td>${fmtPrice(tx.price,tx.currency)}</td>
-      <td>${fmtPrice(tx.qty*tx.price,tx.currency)}</td>
-      <td class="muted">${tx.fee?fmtPrice(tx.fee,tx.currency):'-'}</td>
+      <td style="text-align:right">${qtyStr}</td>
+      <td style="text-align:right">${fmtPrice(tx.price,tx.currency)}</td>
+      <td style="text-align:right">${fmtPrice(tx.qty*tx.price,tx.currency)}</td>
+      <td style="text-align:right" class="muted">${tx.fee?fmtPrice(tx.fee,tx.currency):'-'}</td>
       <td style="white-space:nowrap">
         <button class="btn-xs" style="background:rgba(99,102,241,.15);color:var(--accent);border:none;margin-right:4px" onclick="openEditTx('${tx.id}')">수정</button>
         <button class="btn-xs btn-del" onclick="delTx('${tx.id}')">삭제</button>
       </td>
     </tr>`;
   }
+
+  const tblHead=`<thead><tr><th>날짜</th><th>계좌</th><th>구분</th><th>종목</th><th style="text-align:right">수량</th><th style="text-align:right">단가</th><th style="text-align:right">거래금액</th><th style="text-align:right">수수료</th><th></th></tr></thead>`;
+
+  let listHTML='';
+  if(!txs.length){
+    listHTML='<div class="empty">거래 내역이 없습니다</div>';
+  } else if(_txViewMode==='all'){
+    // 전체 보기
+    listHTML=`<div class="tbl-wrap"><table class="tbl">${tblHead}<tbody>${txs.map(txRow).join('')}</tbody></table></div>`;
+  } else {
+    // 월별 보기 — 월별 그룹핑
+    const months={};
+    for(const tx of txs){
+      const ym=tx.date.slice(0,7); // "2026-06"
+      if(!months[ym])months[ym]={txs:[],buyAmt:0,sellAmt:0,buyCnt:0,sellCnt:0};
+      months[ym].txs.push(tx);
+      const amt=tx.qty*tx.price;
+      if(tx.type==='buy'){months[ym].buyAmt+=amt;months[ym].buyCnt++;}
+      else{months[ym].sellAmt+=amt;months[ym].sellCnt++;}
+    }
+    const ymKeys=Object.keys(months).sort((a,b)=>b.localeCompare(a));
+    listHTML=ymKeys.map(ym=>{
+      const m=months[ym];
+      const [y,mo]=ym.split('-');
+      const label=`${y}년 ${parseInt(mo)}월`;
+      const netAmt=m.buyAmt-m.sellAmt;
+      const netColor=netAmt>=0?'var(--green)':'var(--red)';
+      const mid='txmonth-'+ym.replace('-','');
+      return `
+      <div class="card" style="padding:0;overflow:hidden;margin-bottom:10px">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;user-select:none"
+             onclick="toggleMonthTx('${mid}')">
+          <div style="font-weight:700;font-size:15px">${label}
+            <span style="font-size:12px;font-weight:400;color:var(--muted);margin-left:8px">${m.txs.length}건</span>
+          </div>
+          <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+            <span style="font-size:12px">
+              <span style="color:var(--muted)">매수 ${m.buyCnt}건</span>
+              <span style="color:var(--green);font-weight:600;margin-left:6px">+${Math.round(m.buyAmt).toLocaleString()}원</span>
+            </span>
+            <span style="font-size:12px">
+              <span style="color:var(--muted)">매도 ${m.sellCnt}건</span>
+              <span style="color:var(--red);font-weight:600;margin-left:6px">-${Math.round(m.sellAmt).toLocaleString()}원</span>
+            </span>
+            <span style="font-size:12px;font-weight:700;color:${netColor};min-width:80px;text-align:right">
+              순: ${netAmt>=0?'+':''}${Math.round(netAmt).toLocaleString()}원
+            </span>
+            <span id="${mid}-arrow" style="color:var(--muted);transition:transform .2s;display:inline-block">▾</span>
+          </div>
+        </div>
+        <div id="${mid}" style="overflow:hidden;border-top:1px solid var(--border)">
+          <div class="tbl-wrap" style="margin:0"><table class="tbl" style="border-radius:0">${tblHead}<tbody>${m.txs.map(txRow).join('')}</tbody></table></div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  const viewToggle=`
+    <div style="display:flex;gap:6px;margin-bottom:12px">
+      <button onclick="setTxViewMode('monthly')" class="btn btn-sm ${_txViewMode==='monthly'?'btn-primary':'btn-ghost'}" style="font-size:12px">📅 월별</button>
+      <button onclick="setTxViewMode('all')" class="btn btn-sm ${_txViewMode==='all'?'btn-primary':'btn-ghost'}" style="font-size:12px">📋 전체</button>
+    </div>`;
+
   document.getElementById('tab-transactions').innerHTML=`
     ${acctTabsHTML(_acctFilter,'setTxAcct')}
     <div class="card">
@@ -1372,14 +1440,30 @@ function renderTransactions(){
         <button class="btn btn-primary" onclick="openImportModal()" style="white-space:nowrap;flex-shrink:0">파일 선택</button>
       </div>
     </div>
-    <div class="card">
-      <div class="sec-title">거래 내역 (${txs.length}건)</div>
-      ${!txs.length?'<div class="empty">거래 내역이 없습니다</div>':`
-      <div class="tbl-wrap"><table class="tbl">
-        <thead><tr><th>날짜</th><th>계좌</th><th>구분</th><th>종목</th><th>수량</th><th>단가</th><th>거래금액</th><th>수수료</th><th></th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table></div>`}
+    <div>
+      <div class="row-between" style="margin-bottom:4px">
+        <div class="sec-title" style="margin:0">거래 내역 (${txs.length}건)</div>
+        ${txs.length?viewToggle:''}
+      </div>
+      ${listHTML}
     </div>`;
+}
+
+function toggleMonthTx(id){
+  const el=document.getElementById(id);
+  const arrow=document.getElementById(id+'-arrow');
+  if(!el)return;
+  const isOpen=el.style.display!=='none'&&el.style.maxHeight!=='0px'&&el.style.maxHeight!=='';
+  if(isOpen){
+    el.style.maxHeight=el.scrollHeight+'px';
+    requestAnimationFrame(()=>{ el.style.transition='max-height .25s ease'; el.style.maxHeight='0px'; });
+    if(arrow)arrow.style.transform='rotate(-90deg)';
+  } else {
+    el.style.transition='max-height .3s ease';
+    el.style.maxHeight=el.scrollHeight+'px';
+    setTimeout(()=>{ el.style.maxHeight='none'; },320);
+    if(arrow)arrow.style.transform='rotate(0deg)';
+  }
 }
 
 // ════════════════════════════════════════════════════════════════
