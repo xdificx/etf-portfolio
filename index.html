@@ -90,6 +90,15 @@
     .fb-step{background:var(--card2);border-radius:8px;padding:12px 14px;margin-bottom:8px;font-size:13px;line-height:1.7}
     .fb-step strong{color:var(--accent)}
 
+    /* ── 자동완성 드롭다운 ── */
+    .ac-wrap{position:relative}
+    .ac-dropdown{position:absolute;top:100%;left:0;right:0;background:var(--card);border:1px solid var(--accent);border-radius:8px;z-index:500;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.4);max-height:220px;overflow-y:auto}
+    .ac-item{padding:8px 11px;cursor:pointer;font-size:13px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+    .ac-item:hover,.ac-item.active{background:rgba(99,102,241,.15)}
+    .ac-item-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .ac-item-ticker{font-size:11px;color:var(--accent);font-weight:600;white-space:nowrap}
+    .ac-learned{font-size:9px;color:var(--green);margin-left:3px}
+
     /* ── 엑셀 가져오기 ── */
     .import-modal{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:3000;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto}
     .import-box{background:var(--card);border:1px solid var(--border);border-radius:14px;width:100%;max-width:860px;padding:20px}
@@ -1145,10 +1154,10 @@ function parseSamsungRows(rows) {
 
     if (txTypes.has(type)) {
       const isBuy = type === '매수' || type === '매수_NXT';
-      if (!nameMap[stockName]) nameMap[stockName] = SAMSUNG_TICKER_MAP[stockName] || null;
+      if (!nameMap[stockName]) nameMap[stockName] = lookupTicker(stockName) || null;
       transactions.push({ date, type: isBuy ? 'buy' : 'sell', name: stockName, qty, price, fee, amount, _idx: i });
     } else if (divTypes.has(type)) {
-      if (stockName && !nameMap[stockName]) nameMap[stockName] = SAMSUNG_TICKER_MAP[stockName] || null;
+      if (stockName && !nameMap[stockName]) nameMap[stockName] = lookupTicker(stockName) || null;
       dividends.push({ date, name: stockName, amount, _idx: i });
     } else if (cashTypes.has(type)) {
       const isDeposit = type.includes('입금');
@@ -1257,6 +1266,9 @@ function confirmImport() {
   const existingCfKeys = new Set(S.cashflows.map(c => c.date + '|' + c.memo + '|' + c.amount));
   const existingDivKeys = new Set((S.dividends||[]).map(d => d.exDate + '|' + d.name + '|' + d.amtPerShare));
 
+  // 이번 가져오기에서 확인된 매핑 자동 학습
+  Object.entries(p.nameMap).forEach(([name, ticker]) => { if (name && ticker) learnTicker(name, ticker); });
+
   let txAdded = 0, cfAdded = 0, divAdded = 0;
 
   // 거래내역 (매수/매도)
@@ -1335,8 +1347,8 @@ function renderTransactions(){
         <div class="fg fg-md"><label>날짜</label><input type="date" id="tx-date" value="${today}"></div>
         <div class="fg fg-sm"><label>구분</label><select id="tx-type"><option value="buy">매수</option><option value="sell">매도</option></select></div>
         <div class="fg"><label>계좌</label><select id="tx-account">${acctOpts}</select></div>
-        <div class="fg"><label>티커</label><input type="text" id="tx-ticker" placeholder="005930.KS / AAPL" oninput="this.value=this.value.toUpperCase();autoDetectCur()"></div>
-        <div class="fg"><label>종목명</label><input type="text" id="tx-name" placeholder="삼성전자"></div>
+        <div class="fg"><label>티커</label><input type="text" id="tx-ticker" placeholder="005930.KS / AAPL" oninput="this.value=this.value.toUpperCase();autoDetectCur();acTickerInput('tx-ticker','tx-name')" onblur="closeAcDropdown('tx-name')"></div>
+        <div class="fg ac-wrap"><label>종목명</label><input type="text" id="tx-name" placeholder="삼성전자 또는 KODEX…" oninput="acInput('tx-name','tx-ticker','tx-asset')" onblur="setTimeout(()=>closeAcDropdown('tx-name'),150)" autocomplete="off"></div>
         <div class="fg fg-sm"><label>유형</label><select id="tx-asset"><option value="stock">주식</option><option value="etf">ETF</option></select></div>
       </div>
       <div class="form-row">
@@ -2395,6 +2407,96 @@ function deleteAccount(id){
 
 function autoDetectCur(){const sel=document.getElementById('tx-currency');if(sel)sel.value=detectCur(v('tx-ticker'))}
 
+// ── 자동완성 엔진 ─────────────────────────────────────────────
+let _acActive = -1;
+
+function acInput(nameId, tickerId, assetId) {
+  const nameEl = document.getElementById(nameId);
+  const query = nameEl?.value || '';
+  closeAcDropdown(nameId);
+
+  // 종목명으로 티커 직접 조회
+  const exactTicker = lookupTicker(query);
+  if (exactTicker) {
+    const tickerEl = document.getElementById(tickerId);
+    if (tickerEl && !tickerEl.value) {
+      tickerEl.value = exactTicker;
+      autoDetectCur();
+      if (assetId) {
+        const at = document.getElementById(assetId);
+        if (at) at.value = guessAssetType(query);
+      }
+    }
+  }
+
+  const suggestions = suggestByName(query);
+  if (!suggestions.length || !nameEl) return;
+
+  const wrap = nameEl.closest('.ac-wrap') || nameEl.parentElement;
+  if (!wrap.classList.contains('ac-wrap')) wrap.classList.add('ac-wrap');
+  wrap.style.position = 'relative';
+
+  const dd = document.createElement('div');
+  dd.className = 'ac-dropdown'; dd.id = 'ac-' + nameId;
+  _acActive = -1;
+
+  dd.innerHTML = suggestions.map(([name, ticker], i) => {
+    const isLearned = S.tickerMap && S.tickerMap[name];
+    return '<div class="ac-item" data-name="' + name + '" data-ticker="' + ticker + '" data-idx="' + i + '">'
+      + '<span class="ac-item-name">' + name + (isLearned ? '<span class="ac-learned">★</span>' : '') + '</span>'
+      + '<span class="ac-item-ticker">' + ticker + '</span>'
+    + '</div>';
+  }).join('');
+
+  dd.querySelectorAll('.ac-item').forEach(item => {
+    item.addEventListener('mousedown', e => {
+      e.preventDefault();
+      acSelect(item.dataset.name, item.dataset.ticker, nameId, tickerId, assetId);
+    });
+  });
+
+  wrap.appendChild(dd);
+
+  // 키보드 탐색
+  nameEl.onkeydown = e => {
+    const items = dd.querySelectorAll('.ac-item');
+    if (e.key === 'ArrowDown') { e.preventDefault(); _acActive = Math.min(_acActive+1, items.length-1); acHighlight(items); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); _acActive = Math.max(_acActive-1, -1); acHighlight(items); }
+    else if (e.key === 'Enter' && _acActive >= 0) { e.preventDefault(); const it = items[_acActive]; acSelect(it.dataset.name, it.dataset.ticker, nameId, tickerId, assetId); }
+    else if (e.key === 'Escape') closeAcDropdown(nameId);
+  };
+}
+
+function acHighlight(items) {
+  items.forEach((it, i) => it.classList.toggle('active', i === _acActive));
+  if (_acActive >= 0) items[_acActive].scrollIntoView({ block: 'nearest' });
+}
+
+function acSelect(name, ticker, nameId, tickerId, assetId) {
+  const nameEl = document.getElementById(nameId);
+  const tickerEl = document.getElementById(tickerId);
+  if (nameEl) nameEl.value = name;
+  if (tickerEl) { tickerEl.value = ticker; autoDetectCur(); }
+  if (assetId) { const at = document.getElementById(assetId); if (at) at.value = guessAssetType(name); }
+  closeAcDropdown(nameId);
+}
+
+function closeAcDropdown(nameId) {
+  const old = document.getElementById('ac-' + nameId);
+  if (old) old.remove();
+  _acActive = -1;
+}
+
+// 티커 입력 시 역방향 조회 (티커 → 이름)
+function acTickerInput(tickerId, nameId) {
+  const ticker = (document.getElementById(tickerId)?.value || '').toUpperCase();
+  const nameEl = document.getElementById(nameId);
+  if (!nameEl || nameEl.value) return;
+  const name = lookupName(ticker);
+  if (name) nameEl.value = name;
+  autoDetectCur();
+}
+
 function addTx(){
   const date=v('tx-date'),type=v('tx-type'),ticker=v('tx-ticker').toUpperCase();
   const name=v('tx-name')||ticker,assetType=v('tx-asset');
@@ -2410,6 +2512,7 @@ function addTx(){
     if(!h||h.qty<qty){toast('⚠️ 해당 계좌 보유수량('+((h?h.qty:0).toFixed(4))+')보다 많이 매도할 수 없습니다');return}
   }
   S.transactions.push({id:uid(),date,type,ticker,name,assetType,qty,price,currency,fee,account});
+  if(name && ticker && name !== ticker) learnTicker(name, ticker); // 자동 학습
   save();renderTransactions();toast('✅ '+(type==='buy'?'매수':'매도')+' 추가 — '+ticker);
 }
 
