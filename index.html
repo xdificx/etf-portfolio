@@ -1174,8 +1174,8 @@ function showImportModal() {
   const p = _importParsed;
   if (!p) return;
 
-  // 중복 감지 (날짜+종목명+수량 기준)
-  const existingKeys = new Set(S.transactions.map(t => t.date + '|' + t.name + '|' + t.qty));
+  // 중복 감지 (날짜+종목명+수량+구분 기준) — 당일 매수·매도 같은 수량 충돌 방지
+  const existingKeys = new Set(S.transactions.map(t => t.date + '|' + t.name + '|' + t.qty + '|' + t.type));
 
   const missingTickers = Object.entries(p.nameMap).filter(([,v]) => !v).map(([k]) => k);
 
@@ -1195,7 +1195,7 @@ function showImportModal() {
 
   // 거래 미리보기 (최대 50행)
   const preview = p.transactions.slice(0, 50).map(tx => {
-    const isDup = existingKeys.has(tx.date + '|' + tx.name + '|' + tx.qty);
+    const isDup = existingKeys.has(tx.date + '|' + tx.name + '|' + tx.qty + '|' + tx.type);
     const ticker = p.nameMap[tx.name] || '';
     return '<tr class="' + (isDup ? 'import-row-skip' : '') + '">'
       + '<td>' + tx.date + '</td>'
@@ -1210,7 +1210,7 @@ function showImportModal() {
   }).join('');
 
   const acctOpts = (S.accounts||[]).map(a => '<option value="' + a.id + '">' + a.name + '</option>').join('');
-  const dupCount = p.transactions.filter(tx => existingKeys.has(tx.date + '|' + tx.name + '|' + tx.qty)).length;
+  const dupCount = p.transactions.filter(tx => existingKeys.has(tx.date + '|' + tx.name + '|' + tx.qty + '|' + tx.type)).length;
 
   const modal = document.createElement('div');
   modal.className = 'import-modal'; modal.id = 'import-modal';
@@ -1262,7 +1262,7 @@ function confirmImport() {
   const p = _importParsed; if (!p) return;
   const account = document.getElementById('imp-account')?.value || (S.accounts[0]?.id || 'samsung');
   const skipDup = document.getElementById('imp-skip-dup')?.checked !== false;
-  const existingKeys = new Set(S.transactions.map(t => t.date + '|' + t.name + '|' + t.qty));
+  const existingKeys = new Set(S.transactions.map(t => t.date + '|' + t.name + '|' + t.qty + '|' + t.type));
   const existingCfKeys = new Set(S.cashflows.map(c => c.date + '|' + c.memo + '|' + c.amount));
   const existingDivKeys = new Set((S.dividends||[]).map(d => d.exDate + '|' + d.name + '|' + d.amtPerShare));
 
@@ -1273,7 +1273,7 @@ function confirmImport() {
 
   // 거래내역 (매수/매도)
   for (const tx of p.transactions) {
-    const key = tx.date + '|' + tx.name + '|' + tx.qty;
+    const key = tx.date + '|' + tx.name + '|' + tx.qty + '|' + tx.type;
     if (skipDup && existingKeys.has(key)) continue;
     const ticker = (p.nameMap[tx.name] || '').toUpperCase() || tx.name;
     S.transactions.push({
