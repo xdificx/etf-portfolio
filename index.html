@@ -443,8 +443,11 @@ function computeHoldings(accountFilter){
   const txs=accountFilter
     ?S.transactions.filter(t=>t.account===accountFilter)
     :S.transactions;
-  const sorted=[...txs].sort((a,b)=>
-    a.date!==b.date?a.date.localeCompare(b.date):a.id.localeCompare(b.id));
+  const sorted=[...txs].sort((a,b)=>{
+    if(a.date!==b.date)return a.date.localeCompare(b.date);
+    if(a.type!==b.type)return a.type==='buy'?-1:1; // 같은 날: 매수 먼저, 매도 나중
+    return a.id.localeCompare(b.id);
+  });
   for(const tx of sorted){
     if(!map[tx.ticker])map[tx.ticker]={
       ticker:tx.ticker,name:tx.name,assetType:tx.assetType||'stock',
