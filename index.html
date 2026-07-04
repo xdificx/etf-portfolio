@@ -90,6 +90,24 @@
     .fb-step{background:var(--card2);border-radius:8px;padding:12px 14px;margin-bottom:8px;font-size:13px;line-height:1.7}
     .fb-step strong{color:var(--accent)}
 
+    /* ── 모으기(DCA) ── */
+    .dca-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px}
+    .dca-card-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px}
+    .dca-ticker{font-size:18px;font-weight:700}
+    .dca-meta{font-size:12px;color:var(--muted);margin-top:2px}
+    .dca-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+    @media(max-width:600px){.dca-stats{grid-template-columns:1fr 1fr}}
+    .dca-stat{background:var(--card2);border-radius:8px;padding:10px 12px}
+    .dca-stat-label{font-size:11px;color:var(--muted);margin-bottom:3px}
+    .dca-stat-val{font-size:15px;font-weight:700}
+    .dca-progress{height:6px;background:var(--border);border-radius:3px;margin-top:10px;overflow:hidden}
+    .dca-progress-bar{height:100%;background:var(--accent);border-radius:3px;transition:width .3s}
+    .dca-badge-active{background:rgba(16,185,129,.15);color:var(--green)}
+    .dca-badge-paused{background:rgba(148,163,184,.15);color:var(--muted)}
+    .freq-day{display:inline-flex;gap:4px;flex-wrap:wrap;margin-top:4px}
+    .freq-day label{display:flex;align-items:center;gap:3px;font-size:12px;cursor:pointer;padding:3px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg)}
+    .freq-day input[type=checkbox]:checked+span{color:var(--accent);font-weight:600}
+
     /* ── 스프레드시트 ── */
     .ss-tabs{display:flex;gap:4px;margin-bottom:12px;border-bottom:1px solid var(--border);padding-bottom:0}
     .ss-tab{padding:7px 14px;border:none;background:none;color:var(--muted);cursor:pointer;font-size:13px;border-bottom:2px solid transparent;margin-bottom:-1px}
@@ -116,6 +134,7 @@
   <button onclick="showTab('transactions')" data-tab="transactions">거래내역</button>
   <button onclick="showTab('cashflows')" data-tab="cashflows">입출금</button>
   <button onclick="showTab('dividends')" data-tab="dividends">배당금</button>
+  <button onclick="showTab('dca')" data-tab="dca">모으기</button>
   <button onclick="showTab('tax')" data-tab="tax">세금</button>
   <button onclick="showTab('spreadsheet')" data-tab="spreadsheet">📊 시트</button>
   <button onclick="showTab('settings')" data-tab="settings">설정</button>
@@ -135,6 +154,7 @@
 <div id="tab-transactions" class="tab"></div>
 <div id="tab-cashflows"    class="tab"></div>
 <div id="tab-dividends"    class="tab"></div>
+<div id="tab-dca"          class="tab"></div>
 <div id="tab-tax"          class="tab"></div>
 <div id="tab-spreadsheet"  class="tab"></div>
 <div id="tab-settings"     class="tab"></div>
@@ -330,6 +350,7 @@ const mkState=()=>({
   dividendData:{},    // 자동 조회 데이터 {ticker:{frequency,avgAmount,lastExDate,...}}
   dividends:[],       // 수동 입력 [{id,ticker,name,exDate,payDate,amtPerShare,currency,received}]
   history:[],         // [{date,totalVal,totalCost,kospi,sp500}]
+  dcaPlans:[],        // [{id,ticker,name,currency,assetType,account,amount,frequency,dayOfWeek,startDate,endDate,active}]
   prices:{},
   settings:{manualRate:null}
 });
@@ -658,6 +679,7 @@ function renderTab(n){
   else if(n==='transactions')renderTransactions();
   else if(n==='cashflows')renderCashflows();
   else if(n==='dividends')renderDividends();
+  else if(n==='dca')renderDca();
   else if(n==='tax')renderTax();
   else if(n==='spreadsheet')renderSpreadsheet();
   else if(n==='settings')renderSettings();
@@ -1434,6 +1456,235 @@ function renderTax(){
         □ 해외 ETF (미국 상장): 양도소득세 대상 (위와 동일)
       </div>
     </div>`;
+}
+
+// ════════════════════════════════════════════════════════════════
+// DCA (주식모으기)
+// ════════════════════════════════════════════════════════════════
+const DAY_LABELS = ['월','화','수','목','금','토','일'];
+
+function dcaIsBusinessDay(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00');
+  const dow = d.getDay();
+  return dow !== 0 && dow !== 6;
+}
+
+function dcaShouldBuy(plan, dateStr) {
+  if (dateStr < plan.startDate) return false;
+  if (plan.endDate && dateStr > plan.endDate) return false;
+  if (!dcaIsBusinessDay(dateStr)) return false;
+  if (plan.frequency === 'daily') return true;
+  if (plan.frequency === 'weekly') {
+    const d = new Date(dateStr + 'T00:00:00');
+    const dow = (d.getDay() + 6) % 7; // 0=월~4=금
+    return (plan.daysOfWeek || []).includes(dow);
+  }
+  return false;
+}
+
+function dcaGetBuyDates(plan, fromDate, toDate) {
+  const dates = [];
+  const cur = new Date(fromDate + 'T00:00:00');
+  const end = new Date(toDate + 'T00:00:00');
+  while (cur <= end) {
+    const ds = cur.toISOString().slice(0, 10);
+    if (dcaShouldBuy(plan, ds)) dates.push(ds);
+    cur.setDate(cur.getDate() + 1);
+  }
+  return dates;
+}
+
+function dcaExistingDates(planId) {
+  return new Set(S.transactions.filter(t => t.dcaPlanId === planId).map(t => t.date));
+}
+
+function dcaAddTx(plan, dateStr, price) {
+  if (!price || price <= 0) return false;
+  const qty = plan.currency === 'KRW'
+    ? Math.floor(plan.amount / price)
+    : parseFloat((plan.amount / getRate() / price).toFixed(6));
+  if (qty <= 0) return false;
+  S.transactions.push({
+    id: uid(), date: dateStr, type: 'buy',
+    ticker: plan.ticker, name: plan.name,
+    assetType: plan.assetType || 'etf',
+    qty, price, currency: plan.currency,
+    fee: 0, account: plan.account,
+    dcaPlanId: plan.id,
+  });
+  return true;
+}
+
+function dcaFillHistory(plan) {
+  const today = todayStr();
+  const existing = dcaExistingDates(plan.id);
+  const dates = dcaGetBuyDates(plan, plan.startDate, today);
+  const missing = dates.filter(d => !existing.has(d));
+  if (!missing.length) { toast('추가할 거래가 없습니다'); return; }
+  const p = S.prices[plan.ticker];
+  if (!p) { toast('⚠️ 현재가 없음 — 먼저 가격을 업데이트하세요'); return; }
+  let added = 0;
+  for (const d of missing) { if (dcaAddTx(plan, d, p.price)) added++; }
+  save(); renderDca();
+  toast('✅ ' + plan.ticker + ' — ' + added + '건 추가');
+}
+
+function dcaAddToday(planId) {
+  const plan = (S.dcaPlans || []).find(p => p.id === planId);
+  if (!plan) return;
+  const today = todayStr();
+  if (!dcaShouldBuy(plan, today)) { toast('오늘은 매수일이 아닙니다'); return; }
+  if (dcaExistingDates(planId).has(today)) { toast('오늘 거래가 이미 있습니다'); return; }
+  const p = S.prices[plan.ticker];
+  if (!p) { toast('⚠️ 현재가 없음'); return; }
+  if (dcaAddTx(plan, today, p.price)) { save(); renderDca(); toast('✅ 오늘 ' + plan.ticker + ' 매수 추가'); }
+}
+
+function dcaStats(plan) {
+  const txs = S.transactions.filter(t => t.dcaPlanId === plan.id);
+  const totalQty = txs.reduce((s, t) => s + t.qty, 0);
+  const totalCost = txs.reduce((s, t) => s + toKRW(t.qty * t.price, t.currency), 0);
+  const p = S.prices[plan.ticker];
+  const curPrice = p ? toKRW(p.price, plan.currency) : 0;
+  const curVal = curPrice * totalQty;
+  const pnl = curVal - totalCost;
+  const pnlPct = totalCost > 0 ? pnl / totalCost * 100 : 0;
+  const today = todayStr();
+  const allDates = dcaGetBuyDates(plan, plan.startDate, today);
+  const existing = dcaExistingDates(plan.id);
+  const nextDates = dcaGetBuyDates(plan, today,
+    new Date(Date.now() + 14 * 864e5).toISOString().slice(0, 10))
+    .filter(d => d > today).slice(0, 3);
+  return { txs, totalQty, totalCost, curVal, pnl, pnlPct, allDates, existing, nextDates };
+}
+
+function addDcaPlan() {
+  const ticker = (document.getElementById('dca-ticker').value || '').toUpperCase().trim();
+  const name   = (document.getElementById('dca-name').value || '').trim();
+  const amount = parseFloat(document.getElementById('dca-amount').value);
+  const currency = document.getElementById('dca-currency').value;
+  const assetType = document.getElementById('dca-asset').value;
+  const account = document.getElementById('dca-account').value;
+  const freq = document.getElementById('dca-freq').value;
+  const startDate = document.getElementById('dca-start').value;
+  const endDate = document.getElementById('dca-end').value || null;
+  if (!ticker || !amount || !startDate) { toast('⚠️ 티커, 금액, 시작일을 입력하세요'); return; }
+  const daysOfWeek = freq === 'weekly'
+    ? [0,1,2,3,4].filter(i => document.getElementById('dca-day-' + i) && document.getElementById('dca-day-' + i).checked)
+    : [];
+  if (freq === 'weekly' && !daysOfWeek.length) { toast('⚠️ 요일을 선택하세요'); return; }
+  if (!S.dcaPlans) S.dcaPlans = [];
+  S.dcaPlans.push({ id: uid(), ticker, name, currency, assetType, account, amount, frequency: freq, daysOfWeek, startDate, endDate, active: true });
+  save(); renderDca(); toast('✅ 모으기 계획 추가됨');
+}
+
+function deleteDcaPlan(id) {
+  if (!confirm('계획을 삭제합니다. 연결된 거래의 DCA 태그는 제거되지만 거래 자체는 유지됩니다.')) return;
+  S.dcaPlans = (S.dcaPlans || []).filter(p => p.id !== id);
+  S.transactions.forEach(t => { if (t.dcaPlanId === id) delete t.dcaPlanId; });
+  save(); renderDca(); toast('삭제됐습니다');
+}
+
+function toggleDcaPlan(id) {
+  const p = (S.dcaPlans || []).find(x => x.id === id);
+  if (p) { p.active = !p.active; save(); renderDca(); }
+}
+
+function renderDcaFreqDetail() {
+  const freq = document.getElementById('dca-freq') && document.getElementById('dca-freq').value;
+  const el = document.getElementById('dca-freq-detail');
+  if (!el) return;
+  if (freq === 'weekly') {
+    el.innerHTML = '<div style="margin-top:4px"><label style="color:var(--muted);font-size:11px">매수 요일</label><div class="freq-day">'
+      + DAY_LABELS.map((d, i) => '<label><input type="checkbox" id="dca-day-' + i + '" ' + (i < 5 ? 'checked' : '') + '><span> ' + d + '</span></label>').join('')
+      + '</div></div>';
+  } else {
+    el.innerHTML = '';
+  }
+}
+
+function renderDca() {
+  const el = document.getElementById('tab-dca');
+  const plans = S.dcaPlans || [];
+  const accts = S.accounts || [];
+  const acctMap = {};
+  accts.forEach(a => acctMap[a.id] = a);
+  const fmt = n => Math.round(n).toLocaleString('ko-KR');
+
+  const planCards = plans.length ? plans.map(plan => {
+    const st = dcaStats(plan);
+    const acct = acctMap[plan.account];
+    const freqLabel = plan.frequency === 'daily' ? '매일'
+      : '매주 ' + (plan.daysOfWeek || []).map(i => DAY_LABELS[i]).join('·');
+    const pnlCls = st.pnl >= 0 ? 'pos' : 'neg';
+    const completedDays = st.allDates.filter(d => st.existing.has(d)).length;
+    const progress = st.allDates.length > 0 ? completedDays / st.allDates.length * 100 : 0;
+    const nextStr = st.nextDates.length ? st.nextDates.join(', ') : '없음';
+    const planJson = encodeURIComponent(JSON.stringify(plan));
+    return '<div class="dca-card">'
+      + '<div class="dca-card-header">'
+        + '<div>'
+          + '<div style="display:flex;align-items:center;gap:8px">'
+            + '<span class="dca-ticker">' + plan.ticker + '</span>'
+            + '<span class="badge ' + (plan.active ? 'dca-badge-active' : 'dca-badge-paused') + '">' + (plan.active ? '진행중' : '일시중지') + '</span>'
+          + '</div>'
+          + '<div class="dca-meta">' + (plan.name||'') + ' · ' + freqLabel + ' · ' + fmt(plan.amount) + (plan.currency==='KRW'?'원':'원어치') + ' · ' + (acct?acct.name:'계좌미지정') + '</div>'
+          + '<div class="dca-meta">시작일: ' + plan.startDate + (plan.endDate?' · 종료: '+plan.endDate:'') + ' · 다음: ' + nextStr + '</div>'
+        + '</div>'
+        + '<div style="display:flex;gap:5px;flex-shrink:0;flex-wrap:wrap">'
+          + '<button class="btn btn-xs btn-ghost" onclick="dcaAddToday(\'' + plan.id + '\')">오늘 추가</button>'
+          + '<button class="btn btn-xs btn-primary" onclick="dcaFillHistory(JSON.parse(decodeURIComponent(\'' + planJson + '\')))">기간 채우기</button>'
+          + '<button class="btn btn-xs btn-ghost" onclick="toggleDcaPlan(\'' + plan.id + '\')">' + (plan.active?'중지':'재개') + '</button>'
+          + '<button class="btn btn-xs btn-del" onclick="deleteDcaPlan(\'' + plan.id + '\')">삭제</button>'
+        + '</div>'
+      + '</div>'
+      + '<div class="dca-stats">'
+        + '<div class="dca-stat"><div class="dca-stat-label">누적 매수</div><div class="dca-stat-val">' + fmt(st.totalCost) + '원</div></div>'
+        + '<div class="dca-stat"><div class="dca-stat-label">평가금액</div><div class="dca-stat-val">' + (st.curVal>0?fmt(st.curVal)+'원':'가격 없음') + '</div></div>'
+        + '<div class="dca-stat"><div class="dca-stat-label">손익</div><div class="dca-stat-val ' + pnlCls + '">' + (st.pnl>=0?'+':'') + fmt(st.pnl) + '원</div></div>'
+        + '<div class="dca-stat"><div class="dca-stat-label">수익률</div><div class="dca-stat-val ' + pnlCls + '">' + (st.pnlPct>=0?'+':'') + st.pnlPct.toFixed(2) + '%</div></div>'
+      + '</div>'
+      + '<div style="margin-top:10px;font-size:11px;color:var(--muted);display:flex;justify-content:space-between">'
+        + '<span>매수 완료 ' + completedDays + '/' + st.allDates.length + '일 · 보유 ' + (st.totalQty%1===0?st.totalQty:st.totalQty.toFixed(4)) + '주</span>'
+        + '<span>' + progress.toFixed(0) + '%</span>'
+      + '</div>'
+      + '<div class="dca-progress"><div class="dca-progress-bar" style="width:' + Math.min(progress,100) + '%"></div></div>'
+    + '</div>';
+  }).join('') : '<div class="empty">등록된 모으기 계획이 없습니다.</div>';
+
+  const acctOptions = accts.map(a => '<option value="' + a.id + '">' + a.name + '</option>').join('');
+
+  el.innerHTML = '<div style="padding:16px;max-width:900px;margin:0 auto">'
+    + '<div style="font-size:16px;font-weight:700;margin-bottom:14px">📈 주식모으기 (DCA)</div>'
+    + planCards
+    + '<div class="card" style="margin-top:20px">'
+      + '<div class="sec-title">새 계획 추가</div>'
+      + '<div class="form-row">'
+        + '<div class="fg fg-sm"><label>티커</label><input id="dca-ticker" type="text" placeholder="069500.KS" oninput="this.value=this.value.toUpperCase()"></div>'
+        + '<div class="fg"><label>종목명</label><input id="dca-name" type="text" placeholder="KODEX 200"></div>'
+        + '<div class="fg fg-sm"><label>유형</label><select id="dca-asset"><option value="etf">ETF</option><option value="stock">주식</option></select></div>'
+      + '</div>'
+      + '<div class="form-row">'
+        + '<div class="fg"><label>매수금액 (원/회)</label><input id="dca-amount" type="number" placeholder="10000" step="1000"></div>'
+        + '<div class="fg fg-sm"><label>통화</label><select id="dca-currency"><option value="KRW">KRW</option><option value="USD">USD</option></select></div>'
+        + '<div class="fg"><label>계좌</label><select id="dca-account">' + acctOptions + '</select></div>'
+      + '</div>'
+      + '<div class="form-row">'
+        + '<div class="fg fg-sm"><label>주기</label><select id="dca-freq" onchange="renderDcaFreqDetail()"><option value="daily">매일</option><option value="weekly">매주</option></select></div>'
+        + '<div class="fg fg-md"><label>시작일</label><input id="dca-start" type="date" value="' + todayStr() + '"></div>'
+        + '<div class="fg fg-md"><label>종료일 (선택)</label><input id="dca-end" type="date"></div>'
+      + '</div>'
+      + '<div id="dca-freq-detail"></div>'
+      + '<div class="btn-row" style="margin-top:10px"><button class="btn btn-primary" onclick="addDcaPlan()">계획 추가</button></div>'
+    + '</div>'
+    + '<div class="card" style="font-size:12px;color:var(--muted);line-height:1.8">'
+      + '<strong style="color:var(--text)">💡 사용법</strong><br>'
+      + '① 계획 추가 → ② <strong>기간 채우기</strong>로 시작일~오늘 거래 일괄 생성 → ③ 이후 매일 매수 후 <strong>오늘 추가</strong> 클릭<br>'
+      + '현재가가 없으면 보유종목 탭에서 가격을 먼저 업데이트하세요. 생성된 거래는 거래내역 탭에서도 확인·수정할 수 있습니다.'
+    + '</div>'
+  + '</div>';
+
+  renderDcaFreqDetail();
 }
 
 // ════════════════════════════════════════════════════════════════
