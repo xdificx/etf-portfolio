@@ -2485,6 +2485,8 @@ function renderTickerMapCard() {
 
   const rows = filtered.map(name => {
     const ticker = (userMap[name] !== undefined ? userMap[name] : builtinMap[name]) || '';
+    // onclick 속성은 큰따옴표로 감싸므로, 인수는 작은따옴표 + 이스케이프 처리
+    const safeName = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
     // 인라인 수정 모드
     if (_tmEditingName === name) {
@@ -2492,10 +2494,10 @@ function renderTickerMapCard() {
         <td style="font-size:13px">${esc(name)}</td>
         <td><input id="tm-edit-input" type="text" value="${esc(ticker)}"
           style="width:150px;font-size:13px;padding:4px 8px;border-radius:6px;border:1.5px solid var(--accent);background:var(--bg2);color:var(--fg)"
-          onkeydown="if(event.key==='Enter')saveTickerMapEdit(${JSON.stringify(name)});if(event.key==='Escape')cancelTickerMapEdit()">
+          onkeydown="if(event.key==='Enter')saveTickerMapEdit('${safeName}');if(event.key==='Escape')cancelTickerMapEdit()">
         </td>
         <td style="white-space:nowrap">
-          <button class="btn-xs" style="background:var(--accent);color:#fff;border:none;margin-right:4px" onclick="saveTickerMapEdit(${JSON.stringify(name)})">저장</button>
+          <button class="btn-xs" style="background:var(--accent);color:#fff;border:none;margin-right:4px" onclick="saveTickerMapEdit('${safeName}')">저장</button>
           <button class="btn-xs btn-ghost" onclick="cancelTickerMapEdit()">취소</button>
         </td>
       </tr>`;
@@ -2505,8 +2507,8 @@ function renderTickerMapCard() {
       <td style="font-size:13px">${esc(name)}</td>
       <td><code style="font-size:12px;background:rgba(99,102,241,.1);padding:2px 6px;border-radius:5px">${esc(ticker)}</code></td>
       <td style="white-space:nowrap">
-        <button class="btn-xs" style="background:rgba(99,102,241,.15);color:var(--accent);border:none;margin-right:4px" onclick="startEditTickerMap(${JSON.stringify(name)})">수정</button>
-        <button class="btn-xs btn-del" onclick="deleteTickerMap(${JSON.stringify(name)})">삭제</button>
+        <button class="btn-xs" style="background:rgba(99,102,241,.15);color:var(--accent);border:none;margin-right:4px" onclick="startEditTickerMap('${safeName}')">수정</button>
+        <button class="btn-xs btn-del" onclick="deleteTickerMap('${safeName}')">삭제</button>
       </td>
     </tr>`;
   }).join('');
